@@ -1,38 +1,110 @@
-"""Facade tests: the boundary under test is the ``Gateway.unary`` seam the
-facade routes through — that it sends the right procedure, maps the ergonomic
-arguments onto the right protobuf fields, and unwraps the response. Transport
-and auth are the runtime's concern, so the gateway here is a capturing fake."""
+"""End-to-end facade tests over a real Connect-unary HTTP round-trip.
+
+The boundary under test is the wire contract: that the facade posts to the
+*actual* ``/saas.accounts.v1.DatasourceService/<Method>`` procedure the server
+exposes, serializes the right request, and unwraps the response. A fake in-proc
+gateway can't catch a wrong procedure string (it would echo whatever the SUT
+sent), so the test stands up a real HTTP server and drives it through a real
+``Gateway`` that speaks Connect-unary proto exactly as ``solution_runtime`` does.
+"""
 
 from __future__ import annotations
 
-import datasource
-from saas.accounts.v1 import datasource_pb2 as pb
+import threading
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import pytest
+
+from saas_sdk import datasource
+from saas_sdk._gen import datasource_pb2 as pb
 
 
-class RecordingGateway:
-    """Captures each call and returns a canned response of the requested type."""
+class Gateway:
+    """Real Connect-unary gateway: the minimal transport the runtime provides,
+    reproduced here so the test exercises actual HTTP, not a stub."""
 
-    def __init__(self, responses: dict[str, object] | None = None) -> None:
-        self.calls: list[tuple[str, object]] = []
-        self._responses = responses or {}
+    def __init__(self, base_url: str) -> None:
+        self.base_url = base_url
 
     def unary(self, procedure, request, response_type):
-        self.calls.append((procedure, request))
-        canned = self._responses.get(procedure)
-        return canned if canned is not None else response_type()
+        http_request = urllib.request.Request(
+            f"{self.base_url}{procedure}",
+            data=request.SerializeToString(),
+            headers={
+                "content-type": "application/proto",
+                "connect-protocol-version": "1",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(http_request, timeout=10) as http_response:
+            body = http_response.read()
+        message = response_type()
+        message.ParseFromString(body)
+        return message
 
 
-def test_add_github_source_maps_fields_and_unwraps():
-    gw = RecordingGateway(
-        {
-            "/saas.accounts.v1.DatasourceService/AddGitHubSource": pb.AddGitHubSourceResponse(
-                datasource=pb.Datasource(id="ds-1", target_collection="handbook")
-            )
-        }
-    )
-    ds = datasource.new(gw)
+# Wire handlers keyed by the exact procedure path the real service exposes. If
+# the facade posts to any other path, the server 404s and the call fails.
+_ROUTES = {
+    "/saas.accounts.v1.DatasourceService/AddGitHubSource": (
+        pb.AddGitHubSourceRequest,
+        lambda req: pb.AddGitHubSourceResponse(
+            datasource=pb.Datasource(id="ds-1", target_collection=req.target_collection)
+        ),
+    ),
+    "/saas.accounts.v1.DatasourceService/ListSources": (
+        pb.ListSourcesRequest,
+        lambda req: pb.ListSourcesResponse(
+            datasources=[pb.Datasource(id="a"), pb.Datasource(id="b")]
+        ),
+    ),
+    "/saas.accounts.v1.DatasourceService/SyncSource": (
+        pb.SyncSourceRequest,
+        lambda req: pb.SyncSourceResponse(job_id="job-42"),
+    ),
+}
 
-    source = ds.add_github_source(
+
+@pytest.fixture
+def server():
+    received: list[tuple[str, object]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):  # silence test output
+            pass
+
+        def do_POST(self):
+            route = _ROUTES.get(self.path)
+            if route is None:
+                self.send_error(404)
+                return
+            request_type, respond = route
+            body = self.rfile.read(int(self.headers["Content-Length"]))
+            request = request_type.FromString(body)
+            received.append((self.path, request))
+            payload = respond(request).SerializeToString()
+            self.send_response(200)
+            self.send_header("content-type", "application/proto")
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    host, port = httpd.server_address
+    client = datasource.new(Gateway(f"http://{host}:{port}"))
+    try:
+        yield client, received
+    finally:
+        httpd.shutdown()
+
+
+def test_add_github_source_maps_fields_and_unwraps(server):
+    client, received = server
+
+    source = client.add_github_source(
         org_id="11111111-1111-1111-1111-111111111111",
         repo="codefly-dev/module-saas-starter",
         paths=["docs", "handbook"],
@@ -42,74 +114,36 @@ def test_add_github_source_maps_fields_and_unwraps():
         webhook_secret="whsec",
     )
 
-    procedure, request = gw.calls[0]
-    assert procedure == "/saas.accounts.v1.DatasourceService/AddGitHubSource"
-    # Ergonomic kwargs land on the right proto fields.
+    path, request = received[0]
+    assert path == "/saas.accounts.v1.DatasourceService/AddGitHubSource"
     assert request.repo == "codefly-dev/module-saas-starter"
     assert request.target_collection == "handbook"
     assert request.access_token == "ghp_secret"
     assert request.webhook_secret == "whsec"
     assert list(request.paths) == ["docs", "handbook"]
     assert request.branch == "main"
-    # The response envelope is unwrapped to the bare Datasource.
+    # Response envelope unwrapped to the bare Datasource.
     assert source.id == "ds-1"
     assert source.target_collection == "handbook"
 
 
-def test_list_sources_returns_bare_list():
-    gw = RecordingGateway(
-        {
-            "/saas.accounts.v1.DatasourceService/ListSources": pb.ListSourcesResponse(
-                datasources=[pb.Datasource(id="a"), pb.Datasource(id="b")]
-            )
-        }
-    )
+def test_list_sources_returns_bare_list(server):
+    client, received = server
 
-    sources = datasource.new(gw).list_sources("org-1")
+    sources = client.list_sources("org-1")
 
-    procedure, request = gw.calls[0]
-    assert procedure == "/saas.accounts.v1.DatasourceService/ListSources"
+    path, request = received[0]
+    assert path == "/saas.accounts.v1.DatasourceService/ListSources"
     assert request.org_id == "org-1"
     assert [s.id for s in sources] == ["a", "b"]
 
 
-def test_get_source_passes_ids():
-    gw = RecordingGateway(
-        {
-            "/saas.accounts.v1.DatasourceService/GetSource": pb.GetSourceResponse(
-                datasource=pb.Datasource(id="ds-9")
-            )
-        }
-    )
+def test_sync_returns_job_id(server):
+    client, received = server
 
-    source = datasource.new(gw).get_source("org-1", "ds-9")
+    job_id = client.sync("org-1", "ds-1")
 
-    _, request = gw.calls[0]
-    assert request.org_id == "org-1" and request.id == "ds-9"
-    assert source.id == "ds-9"
-
-
-def test_sync_source_returns_job_id():
-    gw = RecordingGateway(
-        {
-            "/saas.accounts.v1.DatasourceService/SyncSource": pb.SyncSourceResponse(job_id="job-42")
-        }
-    )
-
-    job_id = datasource.new(gw).sync_source("org-1", "ds-1")
-
-    procedure, request = gw.calls[0]
-    assert procedure == "/saas.accounts.v1.DatasourceService/SyncSource"
+    path, request = received[0]
+    assert path == "/saas.accounts.v1.DatasourceService/SyncSource"
     assert request.org_id == "org-1" and request.id == "ds-1"
     assert job_id == "job-42"
-
-
-def test_delete_source_passes_ids():
-    gw = RecordingGateway()
-
-    result = datasource.new(gw).delete_source("org-1", "ds-1")
-
-    procedure, request = gw.calls[0]
-    assert procedure == "/saas.accounts.v1.DatasourceService/DeleteSource"
-    assert request.org_id == "org-1" and request.id == "ds-1"
-    assert result is None

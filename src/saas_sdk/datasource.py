@@ -8,9 +8,9 @@ names the Connect procedure and routes every call through the solution runtime's
 auth, and the wire protocol), so a solution connects a GitHub datasource
 collection in a few lines::
 
-    from datasource import new
+    from saas_sdk import datasource
 
-    ds = new(gateway)
+    ds = datasource.new(gateway)
     source = ds.add_github_source(
         org_id=org,
         repo="codefly-dev/module-saas-starter",
@@ -18,7 +18,7 @@ collection in a few lines::
         collection="handbook",
         access_token=token,
     )
-    ds.sync_source(org, source.id)
+    ds.sync(org, source.id)
 
 The access token is sent once; the connection side encrypts it and persists only
 a secret reference — no read ever returns it.
@@ -29,7 +29,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol, TypeVar
 
-from saas.accounts.v1 import datasource_pb2 as pb
+from saas_sdk._gen import datasource_pb2 as pb
 
 __all__ = ["Client", "Gateway", "new", "pb"]
 
@@ -89,28 +89,13 @@ class Client:
         )
         return list(response.datasources)
 
-    def get_source(self, org_id: str, id: str) -> pb.Datasource:
-        """Return one connected datasource in the org."""
-        response = self._gateway.unary(
-            _SERVICE + "GetSource", pb.GetSourceRequest(org_id=org_id, id=id), pb.GetSourceResponse
-        )
-        return response.datasource
-
-    def sync_source(self, org_id: str, id: str) -> str:
+    def sync(self, org_id: str, id: str) -> str:
         """Mark a source for ingestion and return the durable jobs-inbox id of
         the enqueued request."""
         response = self._gateway.unary(
             _SERVICE + "SyncSource", pb.SyncSourceRequest(org_id=org_id, id=id), pb.SyncSourceResponse
         )
         return response.job_id
-
-    def delete_source(self, org_id: str, id: str) -> None:
-        """Remove a connected datasource and its stored credentials."""
-        self._gateway.unary(
-            _SERVICE + "DeleteSource",
-            pb.DeleteSourceRequest(org_id=org_id, id=id),
-            pb.DeleteSourceResponse,
-        )
 
 
 def new(gateway: Gateway) -> Client:

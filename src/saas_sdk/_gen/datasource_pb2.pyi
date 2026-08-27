@@ -1,14 +1,9 @@
-import datetime
-
-from buf.validate import validate_pb2 as _validate_pb2
 from google.protobuf import timestamp_pb2 as _timestamp_pb2
-from saas.policy.v1 import options_pb2 as _options_pb2
 from google.protobuf.internal import containers as _containers
 from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
-from collections.abc import Iterable as _Iterable, Mapping as _Mapping
-from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
+from typing import ClassVar as _ClassVar, Iterable as _Iterable, Mapping as _Mapping, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
@@ -60,7 +55,7 @@ class Datasource(_message.Message):
     created_at: _timestamp_pb2.Timestamp
     updated_at: _timestamp_pb2.Timestamp
     last_synced_at: _timestamp_pb2.Timestamp
-    def __init__(self, id: _Optional[str] = ..., org_id: _Optional[str] = ..., provider: _Optional[_Union[DatasourceProvider, str]] = ..., target_collection: _Optional[str] = ..., github: _Optional[_Union[GitHubDatasourceConfig, _Mapping]] = ..., status: _Optional[_Union[DatasourceStatus, str]] = ..., webhook_configured: bool = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., last_synced_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+    def __init__(self, id: _Optional[str] = ..., org_id: _Optional[str] = ..., provider: _Optional[_Union[DatasourceProvider, str]] = ..., target_collection: _Optional[str] = ..., github: _Optional[_Union[GitHubDatasourceConfig, _Mapping]] = ..., status: _Optional[_Union[DatasourceStatus, str]] = ..., webhook_configured: bool = ..., created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., last_synced_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
 
 class AddGitHubSourceRequest(_message.Message):
     __slots__ = ("org_id", "repo", "paths", "branch", "target_collection", "access_token", "webhook_secret")
