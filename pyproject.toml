@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "saas-sdk"
+version = "0.1.0"
+description = "Python SDK for the saas accounts API: generated protobuf bindings + gateway-bound facades. Consumed by solutions; never vendored."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["protobuf>=6.31.1"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[tool.setuptools]
+# Two source roots: the generated bindings live under gen/ (top-level `saas`
+# and `buf` packages, because protobuf-python emits absolute imports), and the
+# hand-written facade lives at the repo root.
+packages = [
+    "datasource",
+    "buf",
+    "buf.validate",
+    "saas",
+    "saas.accounts",
+    "saas.accounts.v1",
+    "saas.policy",
+    "saas.policy.v1",
+]
+
+[tool.setuptools.package-dir]
+"" = "gen"
+"datasource" = "datasource"
+
+[tool.setuptools.package-data]
+"*" = ["*.pyi", "py.typed"]

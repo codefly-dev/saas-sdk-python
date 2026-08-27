@@ -1,0 +1,16 @@
+version: v2
+clean: true
+managed:
+  enabled: true
+plugins:
+  # Message bindings only. The runtime owns the Connect transport (a solution
+  # calls through Gateway.unary), so no client/server stubs are generated.
+  # include_imports pulls the proto's non-well-known deps (buf.validate,
+  # saas.policy) into the tree; google.protobuf.* well-knowns come from the
+  # protobuf runtime and are deliberately not emitted.
+  - remote: buf.build/protocolbuffers/python:v31.1
+    out: gen
+    include_imports: true
+  - remote: buf.build/protocolbuffers/pyi:v31.1
+    out: gen
+    include_imports: true
