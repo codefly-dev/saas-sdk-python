@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "saas-sdk-python"
+version = "0.1.0"
+description = "Python SDK for the saas accounts API: generated protobuf bindings + gateway-bound facade. Consumed by solutions; never vendored."
+readme = "README.md"
+requires-python = ">=3.10"
+# Pinned to the 5.x gencode floor the bindings are generated with; stays
+# installable alongside consumers still on protobuf 5.x (and works on 6/7).
+dependencies = ["protobuf>=5.29.3"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"saas_sdk" = ["py.typed"]
+"saas_sdk._gen" = ["*.pyi"]

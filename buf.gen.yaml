@@ -1,0 +1,13 @@
+version: v2
+managed:
+  enabled: true
+plugins:
+  # Message bindings only. The runtime owns the Connect transport (a solution
+  # calls through Gateway.unary), so no client/server stubs are generated.
+  # Pinned to a protobuf-5.x gencode line so the runtime floor stays broad
+  # (protobuf>=5.29.3, not >=6). Run against the *stripped* descriptor image
+  # produced by scripts/generate.sh — see that script and README.
+  - remote: buf.build/protocolbuffers/python:v29.3
+    out: .
+  - remote: buf.build/protocolbuffers/pyi:v29.3
+    out: .
