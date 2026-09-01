@@ -10,10 +10,14 @@ readme = "README.md"
 requires-python = ">=3.10"
 # Pinned to the 5.x gencode floor the bindings are generated with; stays
 # installable alongside consumers still on protobuf 5.x (and works on 6/7).
-dependencies = ["protobuf>=5.29.3"]
+# cryptography carries the Ed25519 verify for Work Contexts; everything else in
+# the verifier is stdlib.
+dependencies = ["protobuf>=5.29.3", "cryptography>=42"]
 
 [project.optional-dependencies]
-test = ["pytest>=8"]
+# FastAPI stays optional: only saas_sdk.work_context_fastapi imports it.
+fastapi = ["fastapi>=0.100"]
+test = ["pytest>=8", "fastapi>=0.100", "httpx>=0.24"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
