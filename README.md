@@ -14,11 +14,12 @@ Two layers:
 - **`saas_sdk._gen`** — the generated protobuf message bindings (`*_pb2`), from
   the accounts public proto at the ref recorded in `SOURCE.txt`. Only message
   types are generated; the runtime owns the Connect transport, so there are no
-  client/server stubs. The bindings embed **only** the datasource proto — the
-  `buf.validate` / `saas.policy` custom options and their shared descriptors are
-  stripped during generation, so this SDK never registers a shared proto into
-  the global descriptor pool (which would collide with a sibling saas SDK).
-  `google.protobuf.Timestamp` stays a runtime well-known type.
+  client/server stubs. The bindings embed **only** the accounts protos this SDK
+  exposes (`datasource.proto`, `work_contexts.proto`) — the `buf.validate` /
+  `saas.policy` custom options, the `google.api` HTTP annotations, and their
+  shared descriptors are stripped during generation, so this SDK never registers
+  a shared proto into the global descriptor pool (which would collide with a
+  sibling saas SDK). The `google.protobuf` well-known types stay runtime types.
 - **`saas_sdk.datasource`** — a gateway-bound facade over those types. It names
   the Connect procedure and routes the call through the solution runtime's
   `Gateway.unary(procedure, request, response_type)` seam, so a solution connects
@@ -41,6 +42,30 @@ Two layers:
   `gateway` is any value exposing `unary(procedure, request, response_type)` —
   which `solution_runtime.Gateway` already satisfies. The runtime stays
   datasource-agnostic and takes **no** dependency on this SDK.
+- **`saas_sdk.work_context`** — the mint-side facade over `WorkContextService`.
+  A solution acting as a delegated caller mints a short-lived Codefly Work
+  Context at turn start and stamps it on every outgoing call, so a downstream
+  service can verify the delegated authority:
+
+  ```python
+  from saas_sdk import work_context
+
+  wc = work_context.new(gateway)
+  parent = wc.start_task(
+      bearer=user_bearer, org_id=org, task_id=task, session_id=session,
+      audience="accounts",
+      scopes=[work_context.pb.WorkContextScope(resource_kind="evidence", actions=["read"])],
+  )
+  ctx = wc.exchange_audience(bearer=user_bearer, parent=parent, audience="evidence", scopes=scopes)
+  wc.attach(headers, ctx)          # per outgoing request
+  ```
+
+  Every mint RPC is owner-bound, so the user's `bearer` is passed on each call
+  rather than relying on the gateway's ambient service identity; `work_context`
+  therefore needs a gateway whose `unary` takes that `bearer`. A context lives
+  5 minutes by default and at most 15 (`DEFAULT_TTL` / `MAX_TTL`); `renew`
+  extends work running past the cap. Mint failures raise `WorkContextMintError`,
+  distinct from a verification failure.
 
 ## Versioning
 
