@@ -245,6 +245,17 @@ def test_accepts_present_non_empty_optional_field(field):
     assert getattr(claims, field) == value
 
 
+def test_whitespace_only_required_field_is_accepted():
+    """min_len=1 is a byte-length floor, not a trim: a non-empty whitespace id
+    (" ") clears it and must be accepted, so Python never rejects a token sdk-go
+    accepts (finding #3). Only a genuinely empty required id is rejected."""
+    claims = _verify_local(_canonical_payload(tenant_id=" "))
+    assert claims.tenant_id == " "
+
+    with pytest.raises(wc.WorkContextError, match="tenant_id is required"):
+        _verify_local(_canonical_payload(tenant_id=""))
+
+
 def test_rejects_unknown_payload_field():
     with pytest.raises(wc.WorkContextError, match="unknown payload field"):
         _verify_local(_canonical_payload(extra="nope"))
@@ -296,6 +307,20 @@ def test_authorization_revision_must_be_decimal_string():
 def test_authorization_revision_rejects_overflow():
     with pytest.raises(wc.WorkContextError, match="authorization_revision"):
         _verify_local(_canonical_payload(authorization_revision=str(1 << 64)))
+
+
+def test_authorization_revision_overlong_fails_as_work_context_error():
+    """A digit string past CPython's int-conversion limit must surface as a
+    WorkContextError, not a raw ValueError escaping the verifier (finding #2)."""
+    with pytest.raises(wc.WorkContextError, match="authorization_revision"):
+        _verify_local(_canonical_payload(authorization_revision="9" * 5000))
+
+
+def test_authorization_revision_accepts_leading_zeros_like_go():
+    """Go's ParseUint accepts leading zeros; the verifier must too, even for a
+    string longer than the int-conversion limit that normalizes to zero."""
+    claims = _verify_local(_canonical_payload(authorization_revision="0" * 5000))
+    assert claims.authorization_revision == 0
 
 
 # --- actor chain attenuation ---------------------------------------------------

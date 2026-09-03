@@ -88,6 +88,13 @@ _JWKS_DEFAULT_REQUEST_TIMEOUT = timedelta(seconds=2)
 _JWKS_MAX_REQUEST_TIMEOUT = timedelta(seconds=30)
 _JWKS_MAX_BYTES = 256 * 1024
 _JWKS_MAX_KEYS = 64
+# After a scheduled refresh fails, hold the failure for this long instead of
+# re-fetching on the very next request. Without it, an expired cache plus a down
+# JWKS endpoint turns *every* inbound verify into a fresh upstream fetch — each
+# blocking under the lock for up to the request timeout — so a brief outage
+# amplifies into a serialized request pile-up. Fail-closed is preserved: callers
+# inside the window get the cached failure, never stale keys.
+_JWKS_FAILED_REFRESH_BACKOFF = timedelta(seconds=5)
 
 _NowFn = Callable[[], datetime]
 
@@ -308,6 +315,12 @@ class JWKSVerifier:
             raise WorkContextError(
                 f"JWKS request timeout must be between 1ms and {_JWKS_MAX_REQUEST_TIMEOUT}"
             )
+        # Validate the skew eagerly, like cache_ttl and request_timeout, rather
+        # than letting the Verifier reject it only when the first fetch builds it
+        # — a misconfiguration should surface at construction, not on first
+        # request.
+        if clock_skew < timedelta(0) or clock_skew > _CLOCK_SKEW:
+            raise WorkContextError(f"clock skew must be between zero and {_CLOCK_SKEW}")
         self._cache_ttl = cache_ttl
         self._request_timeout = request_timeout.total_seconds()
         self._now = now or _system_now
@@ -321,6 +334,10 @@ class JWKSVerifier:
         self._expires_at = 0.0
         self._generation = 0
         self._unknown_refresh_generation = 0
+        # Negative cache for a failed scheduled refresh: fail closed from the
+        # cached error until this moment rather than re-hitting the endpoint.
+        self._retry_after = 0.0
+        self._last_error: WorkContextError | None = None
 
     def refresh(self) -> None:
         """Fetch the JWKS now, replacing the cache. Call at startup to fail
@@ -341,8 +358,13 @@ class JWKSVerifier:
 
     def _current(self) -> tuple[Verifier, frozenset[str], int]:
         with self._lock:
-            if self._verifier is not None and self._now().timestamp() < self._expires_at:
+            now = self._now().timestamp()
+            if self._verifier is not None and now < self._expires_at:
                 return self._verifier, self._key_ids, self._generation
+            if now < self._retry_after:
+                # A recent scheduled refresh failed; fail closed with the cached
+                # error instead of hitting the endpoint again on every request.
+                raise self._last_error  # set together with _retry_after
             verifier, key_ids, generation = self._refresh_locked()
             # A fresh TTL window may spend one unknown-key refresh on rotation.
             self._unknown_refresh_generation = 0
@@ -362,11 +384,20 @@ class JWKSVerifier:
             return verifier, key_ids, generation
 
     def _refresh_locked(self) -> tuple[Verifier, frozenset[str], int]:
-        keys = self._fetch()
-        verifier = Verifier(keys, now=self._now, clock_skew=self._clock_skew)
+        try:
+            keys = self._fetch()
+            verifier = Verifier(keys, now=self._now, clock_skew=self._clock_skew)
+        except WorkContextError as error:
+            # Open a short backoff window so a failed refresh does not re-hit the
+            # endpoint on the next request (avoids an outage-driven fetch storm).
+            self._retry_after = self._now().timestamp() + _JWKS_FAILED_REFRESH_BACKOFF.total_seconds()
+            self._last_error = error
+            raise
         self._verifier = verifier
         self._key_ids = frozenset(keys)
         self._expires_at = self._now().timestamp() + self._cache_ttl.total_seconds()
+        self._retry_after = 0.0
+        self._last_error = None
         self._generation += 1
         return verifier, self._key_ids, self._generation
 
@@ -720,7 +751,11 @@ def _validate_sorted_unique(name: str, values: tuple[str, ...], limit: int) -> N
 
 
 def _validate_bounded(name: str, value: str, limit: int, *, required: bool) -> None:
-    if required and value.strip() == "":
+    # "Required" is the proto's min_len=1: a byte-length floor, not a trim. A
+    # non-empty-but-whitespace id (e.g. " ") clears min_len and must be accepted
+    # to keep bidirectional parity with sdk-go — an over-eager strip() would let
+    # Python reject a token Go accepts.
+    if required and value == "":
         raise WorkContextError(f"{name} is required")
     if len(value.encode("utf-8")) > limit:
         raise WorkContextError(f"{name} exceeds {limit} bytes")
@@ -774,10 +809,15 @@ def _require_str_list(document: dict, key: str) -> tuple[str, ...]:
 def _parse_uint64(value: str) -> int:
     if not value or not value.isascii() or not value.isdigit():
         raise WorkContextError("authorization_revision must be a uint64 decimal")
-    number = int(value)
-    if number > _UINT64_MAX:
+    # Match Go's ParseUint (leading zeros allowed, "000…0" -> 0). Normalizing the
+    # zeros away *before* int() also stops a pathological all-digit string past
+    # CPython's 4300-digit conversion limit from escaping as a raw ValueError
+    # instead of a WorkContextError. 2**64-1 is 20 digits, so anything longer
+    # overflows and never reaches int().
+    normalized = value.lstrip("0") or "0"
+    if len(normalized) > 20 or int(normalized) > _UINT64_MAX:
         raise WorkContextError("authorization_revision must be a uint64 decimal")
-    return number
+    return int(normalized)
 
 
 # --- base64url (raw, unpadded) -------------------------------------------------

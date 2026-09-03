@@ -150,6 +150,48 @@ def test_expired_cache_refetches_but_bad_signature_does_not():
         httpd.shutdown()
 
 
+def test_failed_refresh_backs_off_instead_of_refetching_every_call():
+    """A JWKS outage past the cache TTL must not turn every verify into a fresh
+    upstream fetch; one failed refresh opens a short fail-closed backoff window
+    that serves the cached error without re-hitting the endpoint (finding #1)."""
+    now_box = {"unix": _NOW_UNIX}
+    keys = {"key-1": _public_bytes(_seed(1))}
+    healthy = {"ok": True}
+
+    def handler():
+        if healthy["ok"]:
+            return 200, "application/json", _jwks_json(keys)
+        return 503, "application/json", b"{}"
+
+    state = _State(handler)
+    httpd, url = _server(state)
+    try:
+        verifier = wc.JWKSVerifier(
+            url,
+            now=lambda: datetime.fromtimestamp(now_box["unix"], tz=timezone.utc),
+            cache_ttl=timedelta(minutes=1),
+        )
+        token = _token("key-1", _seed(1))
+        verifier.verify(token)  # boot: 1 request, keys cached for 60s
+        assert state.requests == 1
+
+        now_box["unix"] += 61  # cache expired; endpoint now down
+        healthy["ok"] = False
+        for _ in range(5):
+            with pytest.raises(wc.WorkContextError):
+                verifier.verify(token)
+        # One refresh attempt for the whole backoff window, not one per call.
+        assert state.requests == 2
+
+        # Once the backoff elapses the verifier tries again (still down => one more).
+        now_box["unix"] += int(wc._JWKS_FAILED_REFRESH_BACKOFF.total_seconds())
+        with pytest.raises(wc.WorkContextError):
+            verifier.verify(token)
+        assert state.requests == 3
+    finally:
+        httpd.shutdown()
+
+
 def test_rejects_redirects_without_following_them():
     destination_hits = {"n": 0}
 
@@ -262,6 +304,10 @@ def test_rejects_unsafe_url(url):
         {"cache_ttl": timedelta(milliseconds=1)},
         {"cache_ttl": timedelta(hours=25)},
         {"request_timeout": timedelta(seconds=31)},
+        # clock_skew is validated eagerly at construction, like the others, not
+        # deferred to the first fetch's Verifier build (finding #4).
+        {"clock_skew": timedelta(minutes=2)},
+        {"clock_skew": timedelta(seconds=-1)},
     ],
 )
 def test_rejects_unsafe_timing_configuration(kwargs):
