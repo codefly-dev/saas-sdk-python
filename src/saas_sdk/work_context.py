@@ -19,7 +19,7 @@ verify the delegated authority instead of trusting the caller:
     )
     for callee in ("accounts", "evidence"):
         ctx = wc.exchange_audience(bearer=user_bearer, parent=parent, audience=callee, scopes=parent_scopes)
-        wc.attach(headers, ctx)          # per outgoing request to `callee`
+        work_context.attach(headers, ctx)   # per outgoing request to `callee`
 
 Every mint RPC is owner-bound: the accounts service authorizes the call against
 the *user's* identity, so the user's bearer is passed explicitly on each call
@@ -48,6 +48,7 @@ __all__ = [
     "DEFAULT_TTL",
     "MAX_TTL",
     "HEADER_NAME",
+    "attach",
     "new",
     "pb",
 ]
@@ -175,7 +176,7 @@ class Client:
         """Extend ``ctx`` with a fresh TTL for work running past the cap, using
         the current actor's ``bearer`` rather than the owner's.
 
-        ``audience`` ``None`` keeps the parent's audience (the common
+        Empty or ``None`` ``audience`` keeps the parent's audience (the common
         TTL-only refresh); empty ``scopes`` keeps the actor's authority
         unchanged. Neither can widen the current actor's authority.
         """
@@ -185,29 +186,25 @@ class Client:
             replay_policy=replay_policy,
             ttl_seconds=_ttl_seconds(ttl),
         )
-        if audience is not None:
+        # Only stamp a non-empty audience: the field is an ``optional string``
+        # with a server-side min_len=1, so an empty value present on the wire is
+        # rejected rather than read as "keep the parent's".
+        if audience:
             request.audience = audience
         if scopes:
             request.attenuated_scopes.extend(scopes)
         return self._mint("RenewWorkContext", request, bearer)
-
-    @staticmethod
-    def attach(request_or_headers: _Headers, ctx: pb.IssuedWorkContext) -> _Headers:
-        """Stamp ``ctx``'s token on an outgoing call and return the target.
-
-        ``request_or_headers`` is either a mutable header mapping or a request
-        object exposing one as ``.headers``.
-        """
-        headers = getattr(request_or_headers, "headers", request_or_headers)
-        headers[HEADER_NAME] = _validated_token(ctx.token)
-        return request_or_headers
 
     def _mint(self, method: str, request, bearer: str) -> pb.IssuedWorkContext:
         try:
             return self._gateway.unary(
                 _SERVICE + method, request, pb.IssuedWorkContext, bearer=bearer
             )
-        except WorkContextMintError:
+        except (WorkContextMintError, TypeError):
+            # WorkContextMintError: a gateway that already speaks this error must
+            # not be double-wrapped. TypeError: a gateway whose unary() lacks the
+            # bearer keyword is a call-contract bug, not a mint failure — surface
+            # it unmasked instead of hiding it as "the RPC failed".
             raise
         except Exception as err:  # transport / RPC failure — surface it as a mint error
             raise WorkContextMintError(method, err) from err
@@ -217,10 +214,13 @@ _Headers = MutableMapping[str, str]
 
 
 def _ttl_seconds(ttl: timedelta | None) -> int:
-    resolved = DEFAULT_TTL if ttl is None else ttl
+    # A zero duration means "use the default", matching sdk-go's signer (ttl==0
+    # -> WorkContextDefaultTTL); it is never sent as 0 on the wire. Negative and
+    # over-cap durations stay hard errors.
+    resolved = DEFAULT_TTL if ttl is None or ttl == timedelta(0) else ttl
     seconds = round(resolved.total_seconds())
     if not 0 < seconds <= round(MAX_TTL.total_seconds()):
-        raise ValueError(f"ttl must be in (0, {MAX_TTL}]; got {resolved}")
+        raise ValueError(f"ttl must be positive and at most {MAX_TTL}; got {resolved}")
     return seconds
 
 
@@ -232,6 +232,18 @@ def _validated_token(token: str) -> str:
     if token.count(".") != 1:
         raise ValueError("work context token must have exactly two segments")
     return token
+
+
+def attach(request_or_headers: _Headers, ctx: pb.IssuedWorkContext) -> _Headers:
+    """Stamp ``ctx``'s token on an outgoing call and return the target.
+
+    ``request_or_headers`` is either a mutable header mapping or a request object
+    exposing one as ``.headers``. This is a plain function (like sdk-go's
+    ``AttachWorkContext``) — attaching needs no gateway or client state.
+    """
+    headers = getattr(request_or_headers, "headers", request_or_headers)
+    headers[HEADER_NAME] = _validated_token(ctx.token)
+    return request_or_headers
 
 
 def new(gateway: Gateway) -> Client:

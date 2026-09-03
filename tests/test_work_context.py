@@ -201,7 +201,7 @@ def test_renew_applies_audience_and_scopes_when_set(server):
     assert list(request.attenuated_scopes) == [SCOPE]
 
 
-@pytest.mark.parametrize("ttl", [timedelta(0), timedelta(minutes=16), timedelta(seconds=-1)])
+@pytest.mark.parametrize("ttl", [timedelta(minutes=16), timedelta(seconds=-1)])
 def test_ttl_outside_bounds_rejected_before_any_rpc(server, ttl):
     client, received = server
 
@@ -234,7 +234,7 @@ def test_attach_stamps_header_on_mapping_and_request():
     ctx = pb.IssuedWorkContext(token="head.sig")
 
     headers: dict[str, str] = {}
-    assert work_context.Client.attach(headers, ctx) is headers
+    assert work_context.attach(headers, ctx) is headers
     assert headers[work_context.HEADER_NAME] == "head.sig"
 
     class Request:
@@ -242,11 +242,96 @@ def test_attach_stamps_header_on_mapping_and_request():
             self.headers: dict[str, str] = {}
 
     request = Request()
-    work_context.Client.attach(request, ctx)
+    work_context.attach(request, ctx)
     assert request.headers[work_context.HEADER_NAME] == "head.sig"
 
 
 @pytest.mark.parametrize("token", ["", "no-dot", "too.many.dots"])
 def test_attach_rejects_malformed_token(token):
     with pytest.raises(ValueError):
-        work_context.Client.attach({}, pb.IssuedWorkContext(token=token))
+        work_context.attach({}, pb.IssuedWorkContext(token=token))
+
+
+def test_start_task_sets_workspace_and_project_when_given(server):
+    client, received = server
+
+    client.start_task(
+        bearer="user-token",
+        org_id=ORG,
+        task_id=TASK,
+        session_id=SESSION,
+        audience="accounts",
+        scopes=[SCOPE],
+        workspace_id="ws-1",
+        project_id="proj-1",
+    )
+
+    _, request, _ = received[0]
+    assert request.HasField("workspace_id") and request.workspace_id == "ws-1"
+    assert request.HasField("project_id") and request.project_id == "proj-1"
+
+
+def test_issued_token_round_trips_through_attach(server):
+    client, _ = server
+
+    issued = client.start_task(
+        bearer="user-token",
+        org_id=ORG,
+        task_id=TASK,
+        session_id=SESSION,
+        audience="accounts",
+        scopes=[SCOPE],
+    )
+
+    headers: dict[str, str] = {}
+    work_context.attach(headers, issued)
+    assert headers[work_context.HEADER_NAME] == issued.token
+
+
+def test_renew_treats_empty_audience_as_keep_parent(server):
+    client, received = server
+    ctx = pb.IssuedWorkContext(token="head.sig", org_id=ORG)
+
+    # An empty string must be handled like None: the optional audience field has
+    # a server-side min_len=1, so a present empty value would be rejected.
+    client.renew(bearer="actor-token", ctx=ctx, audience="")
+
+    _, request, _ = received[0]
+    assert not request.HasField("audience")
+
+
+@pytest.mark.parametrize("ttl", [None, timedelta(0)])
+def test_ttl_none_or_zero_defaults_to_five_minutes(server, ttl):
+    client, received = server
+
+    client.start_task(
+        bearer="t",
+        org_id=ORG,
+        task_id=TASK,
+        session_id=SESSION,
+        audience="accounts",
+        scopes=[SCOPE],
+        ttl=ttl,
+    )
+
+    _, request, _ = received[0]
+    assert request.ttl_seconds == 300
+
+
+def test_gateway_without_bearer_keyword_surfaces_type_error_unmasked():
+    # A gateway whose unary() predates the bearer seam is a call-contract bug,
+    # not a mint failure — it must not be swallowed as WorkContextMintError.
+    class LegacyGateway:
+        def unary(self, procedure, request, response_type):
+            raise AssertionError("unreachable: call should fail before this")
+
+    client = work_context.new(LegacyGateway())
+    with pytest.raises(TypeError):
+        client.start_task(
+            bearer="t",
+            org_id=ORG,
+            task_id=TASK,
+            session_id=SESSION,
+            audience="accounts",
+            scopes=[SCOPE],
+        )

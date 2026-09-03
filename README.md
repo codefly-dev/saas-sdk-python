@@ -57,7 +57,7 @@ Two layers:
       scopes=[work_context.pb.WorkContextScope(resource_kind="evidence", actions=["read"])],
   )
   ctx = wc.exchange_audience(bearer=user_bearer, parent=parent, audience="evidence", scopes=scopes)
-  wc.attach(headers, ctx)          # per outgoing request
+  work_context.attach(headers, ctx)   # per outgoing request
   ```
 
   Every mint RPC is owner-bound, so the user's `bearer` is passed on each call
