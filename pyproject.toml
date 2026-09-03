@@ -10,7 +10,8 @@ readme = "README.md"
 requires-python = ">=3.10"
 # Pinned to the 5.x gencode floor the bindings are generated with; stays
 # installable alongside consumers still on protobuf 5.x (and works on 6/7).
-dependencies = ["protobuf>=5.29.3"]
+# cryptography supplies Ed25519 Work Context signature verification.
+dependencies = ["protobuf>=5.29.3", "cryptography>=41"]
 
 [project.optional-dependencies]
 test = ["pytest>=8"]

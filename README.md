@@ -9,7 +9,7 @@ Everything ships under a single top-level package, `saas_sdk`, so installing it
 never claims a generic name (`saas`, `buf`, `datasource`) in the consumer's
 import namespace.
 
-Two layers:
+Three layers:
 
 - **`saas_sdk._gen`** — the generated protobuf message bindings (`*_pb2`), from
   the accounts public proto at the ref recorded in `SOURCE.txt`. Only message
@@ -41,6 +41,51 @@ Two layers:
   `gateway` is any value exposing `unary(procedure, request, response_type)` —
   which `solution_runtime.Gateway` already satisfies. The runtime stays
   datasource-agnostic and takes **no** dependency on this SDK.
+- **`saas_sdk.work_context`** — the callee half of delegated-authority checking:
+  a verifier for a presented `x-codefly-work-context` header. See below.
+
+## Work Context verification
+
+A Work Context is a signed, delegated-authority capability carried in the
+`x-codefly-work-context` header. This SDK is the **callee** half — it verifies a
+presented context so a Python service can participate in delegated-authority
+checks. Minting and attenuating contexts is an authority-side concern that lives
+with the signer in [`sdk-go`](https://github.com/codefly-dev/sdk-go) and is not
+part of this SDK.
+
+The wire format is **not a JWT**. A token is
+`base64url(JSON payload).base64url(Ed25519 sig)`, the payload is a fixed
+snake_case JSON object, and `key_id` lives *inside* the payload. Field order,
+`uint64`-as-decimal-string encoding, scope canonicalization, base64url, and
+Ed25519 signing are pinned byte-for-byte to `sdk-go`: the wire golden in
+`tests/fixtures/work_context_wire_golden.json` is byte-identical to sdk-go's
+`TestWorkContextWireGolden`, and CI in both repos verifies the same token.
+
+```python
+from saas_sdk import work_context as wc
+
+verifier = wc.JWKSVerifier(
+    "https://accounts.codefly.dev/v1/auth/.well-known/jwks.json",
+)
+verifier.refresh()  # optional: fail closed at boot if key discovery is down
+
+token = wc.token_from_headers(request.headers)
+claims = verifier.verify(token, wc.Expectations(
+    issuer="https://accounts.codefly.dev/work-context",
+    audience="warden.evidence",
+))
+wc.require_scope(claims, wc.ScopeRequirement("repository", "write", "repo-warden"))
+```
+
+`JWKSVerifier` discovers Ed25519 keys through the published JWKS endpoint,
+caches them, and — rotation-aware — refreshes once per cache generation on an
+unknown `key_id`. `Verifier` is the same check against a fixed set of keys.
+Verification enforces the two-segment shape, the signature, structural
+validation (including the proto's `min_len` constraints on optional fields and
+monotonic scope attenuation), the time window, and the caller's expectations,
+raising `WorkContextError` (or `WorkContextDenied` from `require_scope`) on any
+failure. Replay policy is reported on the claims; enforcing single-use
+consumption still requires a durable replay store the caller owns.
 
 ## Versioning
 
