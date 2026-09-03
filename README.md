@@ -9,7 +9,7 @@ Everything ships under a single top-level package, `saas_sdk`, so installing it
 never claims a generic name (`saas`, `buf`, `datasource`) in the consumer's
 import namespace.
 
-Two layers:
+Three layers:
 
 - **`saas_sdk._gen`** — the generated protobuf message bindings (`*_pb2`), from
   the accounts public proto at the ref recorded in `SOURCE.txt`. Only message
@@ -42,30 +42,80 @@ Two layers:
   `gateway` is any value exposing `unary(procedure, request, response_type)` —
   which `solution_runtime.Gateway` already satisfies. The runtime stays
   datasource-agnostic and takes **no** dependency on this SDK.
-- **`saas_sdk.work_context`** — the mint-side facade over `WorkContextService`.
-  A solution acting as a delegated caller mints a short-lived Codefly Work
-  Context at turn start and stamps it on every outgoing call, so a downstream
-  service can verify the delegated authority:
+- **`saas_sdk.work_context`** — both halves of the `x-codefly-work-context`
+  feature. **Mint side**, a delegated caller mints a short-lived context at turn
+  start and stamps it on outgoing calls. **Callee side**, a service verifies a
+  presented context. See below.
 
-  ```python
-  from saas_sdk import work_context
+## Work Context
 
-  wc = work_context.new(gateway)
-  parent = wc.start_task(
-      bearer=user_bearer, org_id=org, task_id=task, session_id=session,
-      audience="accounts",
-      scopes=[work_context.pb.WorkContextScope(resource_kind="evidence", actions=["read"])],
-  )
-  ctx = wc.exchange_audience(bearer=user_bearer, parent=parent, audience="evidence", scopes=scopes)
-  work_context.attach(headers, ctx)   # per outgoing request
-  ```
+A Work Context is a signed, delegated-authority capability carried in the
+`x-codefly-work-context` header. `saas_sdk.work_context` carries the two sides a
+solution needs: the **mint-side** client to the accounts authority, and the
+**callee-side** verifier. Only the *signer* itself stays authority-side in
+[`sdk-go`](https://github.com/codefly-dev/sdk-go).
 
-  Every mint RPC is owner-bound, so the user's `bearer` is passed on each call
-  rather than relying on the gateway's ambient service identity; `work_context`
-  therefore needs a gateway whose `unary` takes that `bearer`. A context lives
-  5 minutes by default and at most 15 (`DEFAULT_TTL` / `MAX_TTL`); `renew`
-  extends work running past the cap. Mint failures raise `WorkContextMintError`,
-  distinct from a verification failure.
+The wire format is **not a JWT**. A token is
+`base64url(JSON payload).base64url(Ed25519 sig)`, the payload is a fixed
+snake_case JSON object, and `key_id` lives *inside* the payload. Field order,
+`uint64`-as-decimal-string encoding, scope canonicalization, base64url, and
+Ed25519 signing are pinned byte-for-byte to `sdk-go`: the wire golden in
+`tests/fixtures/work_context_wire_golden.json` is byte-identical to sdk-go's
+`TestWorkContextWireGolden`, and CI in both repos verifies the same token.
+
+### Minting (delegated caller)
+
+A solution acting on a user's behalf mints a context at turn start and stamps it
+on every outgoing call, so a downstream service can verify the delegated
+authority:
+
+```python
+from saas_sdk import work_context
+
+wc = work_context.new(gateway)
+parent = wc.start_task(
+    bearer=user_bearer, org_id=org, task_id=task, session_id=session,
+    audience="accounts",
+    scopes=[work_context.pb.WorkContextScope(resource_kind="evidence", actions=["read"])],
+)
+ctx = wc.exchange_audience(bearer=user_bearer, parent=parent, audience="evidence", scopes=scopes)
+work_context.attach(headers, ctx)   # per outgoing request
+```
+
+Every mint RPC is owner-bound, so the user's `bearer` is passed on each call
+rather than relying on the gateway's ambient service identity; the mint client
+therefore needs a gateway whose `unary` takes that `bearer`. A context lives
+5 minutes by default and at most 15 (`DEFAULT_TTL` / `MAX_TTL`); `renew` extends
+work running past the cap. Mint failures raise `WorkContextMintError`, distinct
+from a verification failure.
+
+### Verifying (callee)
+
+```python
+from saas_sdk import work_context as wc
+
+verifier = wc.JWKSVerifier(
+    "https://accounts.codefly.dev/v1/auth/.well-known/jwks.json",
+)
+verifier.refresh()  # optional: fail closed at boot if key discovery is down
+
+token = wc.token_from_headers(request.headers)
+claims = verifier.verify(token, wc.Expectations(
+    issuer="https://accounts.codefly.dev/work-context",
+    audience="warden.evidence",
+))
+wc.require_scope(claims, wc.ScopeRequirement("repository", "write", "repo-warden"))
+```
+
+`JWKSVerifier` discovers Ed25519 keys through the published JWKS endpoint,
+caches them, and — rotation-aware — refreshes once per cache generation on an
+unknown `key_id`. `Verifier` is the same check against a fixed set of keys.
+Verification enforces the two-segment shape, the signature, structural
+validation (including the proto's `min_len` constraints on optional fields and
+monotonic scope attenuation), the time window, and the caller's expectations,
+raising `WorkContextError` (or `WorkContextDenied` from `require_scope`) on any
+failure. Replay policy is reported on the claims; enforcing single-use
+consumption still requires a durable replay store the caller owns.
 
 ## Versioning
 
