@@ -1,7 +1,9 @@
-src/saas_sdk/_gen generated from codefly-dev/module-saas-starter@527e4c1149973e76718ebd2fb85198173e7bb008
+src/saas_sdk/_gen generated from codefly-dev/module-saas-starter@69ef9d19675d94f3a828c4fb4ffd8f80d0bc6272
 (accounts public proto: module/services/accounts/proto)
-service: saas.accounts.v1.DatasourceService (datasource.proto only; custom
-options + shared descriptors stripped — see scripts/generate.sh)
+services:
+  saas.accounts.v1.DatasourceService (datasource.proto)
+  saas.accounts.v1.WorkContextService (work_contexts.proto)
+custom options + shared descriptors stripped — see scripts/generate.sh
 
 module version: 0.1.0 (module/module.package.codefly.yaml)
 This SDK's release is matched to the saas-starter module version above.
