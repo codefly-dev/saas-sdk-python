@@ -14,11 +14,12 @@ Three layers:
 - **`saas_sdk._gen`** — the generated protobuf message bindings (`*_pb2`), from
   the accounts public proto at the ref recorded in `SOURCE.txt`. Only message
   types are generated; the runtime owns the Connect transport, so there are no
-  client/server stubs. The bindings embed **only** the datasource proto — the
-  `buf.validate` / `saas.policy` custom options and their shared descriptors are
-  stripped during generation, so this SDK never registers a shared proto into
-  the global descriptor pool (which would collide with a sibling saas SDK).
-  `google.protobuf.Timestamp` stays a runtime well-known type.
+  client/server stubs. The bindings embed **only** the accounts protos this SDK
+  exposes (`datasource.proto`, `work_contexts.proto`) — the `buf.validate` /
+  `saas.policy` custom options, the `google.api` HTTP annotations, and their
+  shared descriptors are stripped during generation, so this SDK never registers
+  a shared proto into the global descriptor pool (which would collide with a
+  sibling saas SDK). The `google.protobuf` well-known types stay runtime types.
 - **`saas_sdk.datasource`** — a gateway-bound facade over those types. It names
   the Connect procedure and routes the call through the solution runtime's
   `Gateway.unary(procedure, request, response_type)` seam, so a solution connects
@@ -41,17 +42,18 @@ Three layers:
   `gateway` is any value exposing `unary(procedure, request, response_type)` —
   which `solution_runtime.Gateway` already satisfies. The runtime stays
   datasource-agnostic and takes **no** dependency on this SDK.
-- **`saas_sdk.work_context`** — the callee half of delegated-authority checking:
-  a verifier for a presented `x-codefly-work-context` header. See below.
+- **`saas_sdk.work_context`** — both halves of the `x-codefly-work-context`
+  feature. **Mint side**, a delegated caller mints a short-lived context at turn
+  start and stamps it on outgoing calls. **Callee side**, a service verifies a
+  presented context. See below.
 
-## Work Context verification
+## Work Context
 
 A Work Context is a signed, delegated-authority capability carried in the
-`x-codefly-work-context` header. This SDK is the **callee** half — it verifies a
-presented context so a Python service can participate in delegated-authority
-checks. Minting and attenuating contexts is an authority-side concern that lives
-with the signer in [`sdk-go`](https://github.com/codefly-dev/sdk-go) and is not
-part of this SDK.
+`x-codefly-work-context` header. `saas_sdk.work_context` carries the two sides a
+solution needs: the **mint-side** client to the accounts authority, and the
+**callee-side** verifier. Only the *signer* itself stays authority-side in
+[`sdk-go`](https://github.com/codefly-dev/sdk-go).
 
 The wire format is **not a JWT**. A token is
 `base64url(JSON payload).base64url(Ed25519 sig)`, the payload is a fixed
@@ -60,6 +62,34 @@ snake_case JSON object, and `key_id` lives *inside* the payload. Field order,
 Ed25519 signing are pinned byte-for-byte to `sdk-go`: the wire golden in
 `tests/fixtures/work_context_wire_golden.json` is byte-identical to sdk-go's
 `TestWorkContextWireGolden`, and CI in both repos verifies the same token.
+
+### Minting (delegated caller)
+
+A solution acting on a user's behalf mints a context at turn start and stamps it
+on every outgoing call, so a downstream service can verify the delegated
+authority:
+
+```python
+from saas_sdk import work_context
+
+wc = work_context.new(gateway)
+parent = wc.start_task(
+    bearer=user_bearer, org_id=org, task_id=task, session_id=session,
+    audience="accounts",
+    scopes=[work_context.pb.WorkContextScope(resource_kind="evidence", actions=["read"])],
+)
+ctx = wc.exchange_audience(bearer=user_bearer, parent=parent, audience="evidence", scopes=scopes)
+work_context.attach(headers, ctx)   # per outgoing request
+```
+
+Every mint RPC is owner-bound, so the user's `bearer` is passed on each call
+rather than relying on the gateway's ambient service identity; the mint client
+therefore needs a gateway whose `unary` takes that `bearer`. A context lives
+5 minutes by default and at most 15 (`DEFAULT_TTL` / `MAX_TTL`); `renew` extends
+work running past the cap. Mint failures raise `WorkContextMintError`, distinct
+from a verification failure.
+
+### Verifying (callee)
 
 ```python
 from saas_sdk import work_context as wc

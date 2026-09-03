@@ -14,7 +14,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from saas_sdk import work_context as wc
-from test_work_context import _canonical_payload, sign_token
+from test_work_context_verify import _canonical_payload, sign_token
 
 _NOW_UNIX = 1784810096
 

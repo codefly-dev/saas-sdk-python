@@ -1,11 +1,16 @@
-"""Callee-side verifier for signed Codefly Work Contexts — the Python twin of
-``sdk-go``'s ``work_context.go``/``work_context_jwks.go`` verifier half.
+"""Codefly Work Contexts — both halves of the ``x-codefly-work-context`` feature,
+the Python twin of ``sdk-go``'s ``work_context.go``/``work_context_jwks.go``.
 
-A Work Context is an ``x-codefly-work-context`` header carrying a delegated
-authority capability. This module lets a Python service *verify* a presented
-context so it can participate in delegated-authority checks; it is the callee
-half only. Minting and attenuating contexts is an authority-side concern that
-lives with the signer in ``sdk-go`` and is deliberately absent here.
+A Work Context is a header carrying a delegated authority capability. This module
+covers the two sides a solution needs:
+
+* **Mint side** — :func:`new` / :class:`Client` bind to a solution-runtime
+  gateway and mint short-lived contexts at the accounts ``WorkContextService``
+  (``start_task`` / ``exchange_audience`` / ``renew``); :func:`attach` stamps a
+  minted token on outgoing calls. Only the *client* to the authority is here —
+  the signer itself stays authority-side in ``sdk-go``.
+* **Callee side** — :class:`Verifier` / :class:`JWKSVerifier` *verify* a
+  presented context so a service can act on delegated authority.
 
 The wire format is **not a JWT**: a token is ``base64url(payload).base64url(sig)``
 where ``payload`` is a fixed snake_case JSON object, ``sig`` is a raw 64-byte
@@ -35,22 +40,29 @@ import json
 import threading
 import urllib.error
 import urllib.request
+from collections.abc import MutableMapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Callable
+from typing import Callable, Protocol, TypeVar
 from urllib.parse import urlsplit
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
+from saas_sdk._gen import work_contexts_pb2 as pb
+
 __all__ = [
     "WORK_CONTEXT_HEADER",
+    "HEADER_NAME",
     "WORK_CONTEXT_TYPE",
     "WORK_CONTEXT_ALGORITHM",
     "REPLAY_IDEMPOTENT",
     "REPLAY_SINGLE_USE",
+    "DEFAULT_TTL",
+    "MAX_TTL",
     "WorkContextError",
     "WorkContextDenied",
+    "WorkContextMintError",
     "WorkScope",
     "WorkActor",
     "WorkContext",
@@ -58,16 +70,27 @@ __all__ = [
     "ScopeRequirement",
     "Verifier",
     "JWKSVerifier",
+    "Client",
+    "Gateway",
     "require_scope",
     "token_from_headers",
+    "attach",
+    "new",
+    "pb",
 ]
 
 WORK_CONTEXT_HEADER = "x-codefly-work-context"
+# Mint-side alias for the same carrier, matching sdk-go's WorkContextHeaderName.
+HEADER_NAME = WORK_CONTEXT_HEADER
 WORK_CONTEXT_TYPE = "codefly.work-context/v1"
 WORK_CONTEXT_ALGORITHM = "Ed25519"
 
 REPLAY_IDEMPOTENT = "idempotent"
 REPLAY_SINGLE_USE = "single-use"
+
+# Issuance TTL bounds, matching sdk-go's WorkContextDefaultTTL / WorkContextMaxTTL.
+DEFAULT_TTL = timedelta(minutes=5)
+MAX_TTL = timedelta(minutes=15)
 
 _MAX_TOKEN_BYTES = 32 * 1024
 _MAX_ID_BYTES = 512
@@ -836,3 +859,194 @@ def _b64url_decode(segment: str) -> bytes:
 
 def _system_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# --- mint side: WorkContextService client --------------------------------------
+#
+# The callee half above verifies a presented context; the half below is the
+# delegated caller that mints one at the accounts authority and stamps it on
+# outgoing calls. Only the client to the authority lives here — the signer stays
+# authority-side in sdk-go.
+
+_M = TypeVar("_M")
+
+_SERVICE = "/saas.accounts.v1.WorkContextService/"
+
+_Headers = MutableMapping[str, str]
+
+
+class WorkContextMintError(Exception):
+    """A mint RPC (``StartTask`` / ``ExchangeAudience`` / ``RenewWorkContext``)
+    was rejected or failed at the accounts service.
+
+    Distinct from a verification failure so a delegated caller that both mints
+    and verifies can tell a minting problem (this side) from a bad presented
+    capability (the verify side).
+    """
+
+    def __init__(self, procedure: str, cause: object) -> None:
+        self.procedure = procedure
+        super().__init__(f"{procedure}: {cause}")
+
+
+class Gateway(Protocol):
+    """Transport seam the mint client needs from the solution runtime.
+
+    Unlike the ambient-auth datasource gateway, ``unary`` takes the ``bearer``
+    to present as the call's authorization, so the mint client can bind each
+    owner-bound RPC to the user's token rather than the solution's own identity.
+    """
+
+    def unary(self, procedure: str, request, response_type: type[_M], *, bearer: str) -> _M: ...
+
+
+class Client:
+    """Entry point: ``new(gateway).start_task(...)``."""
+
+    def __init__(self, gateway: Gateway) -> None:
+        self._gateway = gateway
+
+    def start_task(
+        self,
+        *,
+        bearer: str,
+        org_id: str,
+        task_id: str,
+        session_id: str,
+        audience: str,
+        scopes: Sequence[pb.WorkContextScope],
+        actor_principal_id: str = "",
+        ttl: timedelta | None = None,
+        replay_policy: pb.WorkContextReplayPolicy = pb.WORK_CONTEXT_REPLAY_POLICY_UNSPECIFIED,
+        workspace_id: str = "",
+        project_id: str = "",
+    ) -> pb.IssuedWorkContext:
+        """Mint the root capability for a task and return the issued context.
+
+        ``actor_principal_id`` empty means a direct human-owned task; otherwise
+        it names the agent principal acting under the user's authority.
+        """
+        request = pb.StartTaskWorkContextRequest(
+            org_id=org_id,
+            task_id=task_id,
+            session_id=session_id,
+            audience=audience,
+            authority_scopes=list(scopes),
+            replay_policy=replay_policy,
+            ttl_seconds=_ttl_seconds(ttl),
+        )
+        if actor_principal_id:
+            request.actor_principal_id = actor_principal_id
+        if workspace_id:
+            request.workspace_id = workspace_id
+        if project_id:
+            request.project_id = project_id
+        return self._mint("StartTask", request, bearer)
+
+    def exchange_audience(
+        self,
+        *,
+        bearer: str,
+        parent: pb.IssuedWorkContext,
+        audience: str,
+        scopes: Sequence[pb.WorkContextScope],
+        ttl: timedelta | None = None,
+        replay_policy: pb.WorkContextReplayPolicy = pb.WORK_CONTEXT_REPLAY_POLICY_UNSPECIFIED,
+    ) -> pb.IssuedWorkContext:
+        """Reissue ``parent`` for one callee ``audience``, attenuating authority
+        to ``scopes`` — the same task, session, and owner, never widened. Call
+        once per distinct callee audience at turn start.
+        """
+        request = pb.ExchangeWorkContextAudienceRequest(
+            org_id=parent.org_id,
+            parent_work_context_token=parent.token,
+            audience=audience,
+            attenuated_scopes=list(scopes),
+            replay_policy=replay_policy,
+            ttl_seconds=_ttl_seconds(ttl),
+        )
+        return self._mint("ExchangeAudience", request, bearer)
+
+    def renew(
+        self,
+        *,
+        bearer: str,
+        ctx: pb.IssuedWorkContext,
+        audience: str | None = None,
+        scopes: Sequence[pb.WorkContextScope] = (),
+        ttl: timedelta | None = None,
+        replay_policy: pb.WorkContextReplayPolicy = pb.WORK_CONTEXT_REPLAY_POLICY_UNSPECIFIED,
+    ) -> pb.IssuedWorkContext:
+        """Extend ``ctx`` with a fresh TTL for work running past the cap, using
+        the current actor's ``bearer`` rather than the owner's.
+
+        Empty or ``None`` ``audience`` keeps the parent's audience (the common
+        TTL-only refresh); empty ``scopes`` keeps the actor's authority
+        unchanged. Neither can widen the current actor's authority.
+        """
+        request = pb.RenewWorkContextRequest(
+            org_id=ctx.org_id,
+            parent_work_context_token=ctx.token,
+            replay_policy=replay_policy,
+            ttl_seconds=_ttl_seconds(ttl),
+        )
+        # Only stamp a non-empty audience: the field is an ``optional string``
+        # with a server-side min_len=1, so an empty value present on the wire is
+        # rejected rather than read as "keep the parent's".
+        if audience:
+            request.audience = audience
+        if scopes:
+            request.attenuated_scopes.extend(scopes)
+        return self._mint("RenewWorkContext", request, bearer)
+
+    def _mint(self, method: str, request, bearer: str) -> pb.IssuedWorkContext:
+        try:
+            return self._gateway.unary(
+                _SERVICE + method, request, pb.IssuedWorkContext, bearer=bearer
+            )
+        except (WorkContextMintError, TypeError):
+            # WorkContextMintError: a gateway that already speaks this error must
+            # not be double-wrapped. TypeError: a gateway whose unary() lacks the
+            # bearer keyword is a call-contract bug, not a mint failure — surface
+            # it unmasked instead of hiding it as "the RPC failed".
+            raise
+        except Exception as err:  # transport / RPC failure — surface it as a mint error
+            raise WorkContextMintError(method, err) from err
+
+
+def _ttl_seconds(ttl: timedelta | None) -> int:
+    # A zero duration means "use the default", matching sdk-go's signer (ttl==0
+    # -> WorkContextDefaultTTL); it is never sent as 0 on the wire. Negative and
+    # over-cap durations stay hard errors.
+    resolved = DEFAULT_TTL if ttl is None or ttl == timedelta(0) else ttl
+    seconds = round(resolved.total_seconds())
+    if not 0 < seconds <= round(MAX_TTL.total_seconds()):
+        raise ValueError(f"ttl must be positive and at most {MAX_TTL}; got {resolved}")
+    return seconds
+
+
+def _validated_token(token: str) -> str:
+    if not token:
+        raise ValueError("work context token is empty")
+    if len(token.encode()) > _MAX_TOKEN_BYTES:
+        raise ValueError("work context token exceeds 32 KiB")
+    if token.count(".") != 1:
+        raise ValueError("work context token must have exactly two segments")
+    return token
+
+
+def attach(request_or_headers: _Headers, ctx: pb.IssuedWorkContext) -> _Headers:
+    """Stamp ``ctx``'s token on an outgoing call and return the target.
+
+    ``request_or_headers`` is either a mutable header mapping or a request object
+    exposing one as ``.headers``. This is a plain function (like sdk-go's
+    ``AttachWorkContext``) — attaching needs no gateway or client state.
+    """
+    headers = getattr(request_or_headers, "headers", request_or_headers)
+    headers[HEADER_NAME] = _validated_token(ctx.token)
+    return request_or_headers
+
+
+def new(gateway: Gateway) -> Client:
+    """Bind the mint-side Work Context client to a solution runtime gateway."""
+    return Client(gateway)
