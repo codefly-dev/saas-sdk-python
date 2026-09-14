@@ -9,7 +9,7 @@ Everything ships under a single top-level package, `saas_sdk`, so installing it
 never claims a generic name (`saas`, `buf`, `datasource`) in the consumer's
 import namespace.
 
-Three layers:
+Packages:
 
 - **`saas_sdk._gen`** — the generated protobuf message bindings (`*_pb2`), from
   the accounts public proto at the ref recorded in `SOURCE.txt`. Only message
@@ -116,6 +116,50 @@ monotonic scope attenuation), the time window, and the caller's expectations,
 raising `WorkContextError` (or `WorkContextDenied` from `require_scope`) on any
 failure. Replay policy is reported on the claims; enforcing single-use
 consumption still requires a durable replay store the caller owns.
+
+## Current authorization revision
+
+`saas_sdk.authorization_revision` implements Accounts' current revision protocol
+for **already verified** `WorkContext` claims. It projects the owner and every
+actor's original scopes, including resource IDs and revision. The consumer keeps
+signature/lifetime verification, action/resource policy and public error mapping.
+
+```python
+from saas_sdk.authorization_revision import GRPCClient, RevisionDenied, RevisionUnavailable
+
+client = GRPCClient("https://accounts.internal:50051", current_internal_credential)
+try:
+    await client.check(verified_claims)
+finally:
+    await client.aclose()
+```
+
+Install `saas-sdk-python[revision-grpc]` for the canonical TLS gRPC client. Where an
+endpoint explicitly serves Connect, install `[revision-connect]` and select
+`ConnectClient`; selecting that compatibility transport is a composition choice,
+never an automatic fallback. `revision_request(claims)` needs neither networking
+extra and returns the canonical generated protobuf request.
+
+Each check loads the current internal service credential through an async callback
+and makes one query. It does not cache authorization, retry, inherit environment
+proxies, follow redirects or forward caller bearer tokens, cookies or Work Context
+headers. One three-second budget covers credential loading, connection and the
+complete response; caller cancellation propagates. The callback and any injected
+fixture transport must cooperate with cancellation. `tls_context` selects verified
+trust roots; TLS verification cannot be disabled. Connect's explicit `transport`
+injection exists for fixtures and is trusted to implement its own transport
+security; production should use the default transport.
+
+Only gRPC `PermissionDenied`/`FailedPrecondition`, or their coherent Connect
+status/code pairs, raise `RevisionDenied`. Credential, transport and malformed
+response failures raise `RevisionUnavailable`. Responses must be the canonical
+empty message, and error strings omit remote details and credentials. Neither
+error grants authority; consumers explicitly map them onto their public API.
+
+The projection fixture at `tests/fixtures/authorization_revision_projection.json`
+is shared byte-for-byte with the Go SDK's
+`authorizationrevision/testdata/projection.json`. Owner/actor scope projection is
+therefore verified independently of transport and consumer policy.
 
 ## Versioning
 
