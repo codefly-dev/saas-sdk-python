@@ -16,6 +16,23 @@ from google.protobuf.json_format import MessageToDict
 from ._gen import work_contexts_pb2 as pb
 from .work_context import WorkContext
 
+# Re-exported so a consumer names the request revision_request builds without
+# importing saas_sdk._gen. Same object, so isinstance keeps working.
+CheckAuthorizationRevisionRequest = pb.CheckAuthorizationRevisionRequest
+
+# Without this, a star-import re-exports every public module-level name — which
+# includes ``pb``, the generated bindings themselves.
+__all__ = [
+    "REVISION_PATH",
+    "TIMEOUT",
+    "RevisionDenied",
+    "RevisionUnavailable",
+    "CheckAuthorizationRevisionRequest",
+    "revision_request",
+    "ConnectClient",
+    "GRPCClient",
+]
+
 try:
     import grpc
 except ImportError:
@@ -86,7 +103,7 @@ def _https_origin(value: str) -> str:
     return value.rstrip("/")
 
 
-def revision_request(claims: WorkContext) -> pb.CheckAuthorizationRevisionRequest:
+def revision_request(claims: WorkContext) -> CheckAuthorizationRevisionRequest:
     """Copy owner and every actor scope; the caller owns verification and policy."""
     if (
         not isinstance(claims, WorkContext)

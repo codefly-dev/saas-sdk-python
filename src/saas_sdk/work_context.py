@@ -51,6 +51,16 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from saas_sdk._gen import work_contexts_pb2 as pb
 
+# Re-exported so a consumer names the types the mint side takes and returns
+# without importing saas_sdk._gen. Same objects, so isinstance and existing
+# imports keep working.
+IssuedWorkContext = pb.IssuedWorkContext
+WorkContextScope = pb.WorkContextScope
+WorkContextReplayPolicy = pb.WorkContextReplayPolicy
+WORK_CONTEXT_REPLAY_POLICY_UNSPECIFIED = pb.WORK_CONTEXT_REPLAY_POLICY_UNSPECIFIED
+WORK_CONTEXT_REPLAY_POLICY_IDEMPOTENT = pb.WORK_CONTEXT_REPLAY_POLICY_IDEMPOTENT
+WORK_CONTEXT_REPLAY_POLICY_SINGLE_USE = pb.WORK_CONTEXT_REPLAY_POLICY_SINGLE_USE
+
 __all__ = [
     "WORK_CONTEXT_HEADER",
     "HEADER_NAME",
@@ -63,6 +73,12 @@ __all__ = [
     "WorkContextError",
     "WorkContextDenied",
     "WorkContextMintError",
+    "IssuedWorkContext",
+    "WorkContextScope",
+    "WorkContextReplayPolicy",
+    "WORK_CONTEXT_REPLAY_POLICY_UNSPECIFIED",
+    "WORK_CONTEXT_REPLAY_POLICY_IDEMPOTENT",
+    "WORK_CONTEXT_REPLAY_POLICY_SINGLE_USE",
     "WorkScope",
     "WorkActor",
     "WorkContext",
@@ -76,7 +92,6 @@ __all__ = [
     "token_from_headers",
     "attach",
     "new",
-    "pb",
 ]
 
 WORK_CONTEXT_HEADER = "x-codefly-work-context"
@@ -914,13 +929,13 @@ class Client:
         task_id: str,
         session_id: str,
         audience: str,
-        scopes: Sequence[pb.WorkContextScope],
+        scopes: Sequence[WorkContextScope],
         actor_principal_id: str = "",
         ttl: timedelta | None = None,
-        replay_policy: pb.WorkContextReplayPolicy = pb.WORK_CONTEXT_REPLAY_POLICY_UNSPECIFIED,
+        replay_policy: WorkContextReplayPolicy = WORK_CONTEXT_REPLAY_POLICY_UNSPECIFIED,
         workspace_id: str = "",
         project_id: str = "",
-    ) -> pb.IssuedWorkContext:
+    ) -> IssuedWorkContext:
         """Mint the root capability for a task and return the issued context.
 
         ``actor_principal_id`` empty means a direct human-owned task; otherwise
@@ -947,12 +962,12 @@ class Client:
         self,
         *,
         bearer: str,
-        parent: pb.IssuedWorkContext,
+        parent: IssuedWorkContext,
         audience: str,
-        scopes: Sequence[pb.WorkContextScope],
+        scopes: Sequence[WorkContextScope],
         ttl: timedelta | None = None,
-        replay_policy: pb.WorkContextReplayPolicy = pb.WORK_CONTEXT_REPLAY_POLICY_UNSPECIFIED,
-    ) -> pb.IssuedWorkContext:
+        replay_policy: WorkContextReplayPolicy = WORK_CONTEXT_REPLAY_POLICY_UNSPECIFIED,
+    ) -> IssuedWorkContext:
         """Reissue ``parent`` for one callee ``audience``, attenuating authority
         to ``scopes`` — the same task, session, and owner, never widened. Call
         once per distinct callee audience at turn start.
@@ -971,12 +986,12 @@ class Client:
         self,
         *,
         bearer: str,
-        ctx: pb.IssuedWorkContext,
+        ctx: IssuedWorkContext,
         audience: str | None = None,
-        scopes: Sequence[pb.WorkContextScope] = (),
+        scopes: Sequence[WorkContextScope] = (),
         ttl: timedelta | None = None,
-        replay_policy: pb.WorkContextReplayPolicy = pb.WORK_CONTEXT_REPLAY_POLICY_UNSPECIFIED,
-    ) -> pb.IssuedWorkContext:
+        replay_policy: WorkContextReplayPolicy = WORK_CONTEXT_REPLAY_POLICY_UNSPECIFIED,
+    ) -> IssuedWorkContext:
         """Extend ``ctx`` with a fresh TTL for work running past the cap, using
         the current actor's ``bearer`` rather than the owner's.
 
@@ -1035,7 +1050,7 @@ def _validated_token(token: str) -> str:
     return token
 
 
-def attach(request_or_headers: _Headers, ctx: pb.IssuedWorkContext) -> _Headers:
+def attach(request_or_headers: _Headers, ctx: IssuedWorkContext) -> _Headers:
     """Stamp ``ctx``'s token on an outgoing call and return the target.
 
     ``request_or_headers`` is either a mutable header mapping or a request object
