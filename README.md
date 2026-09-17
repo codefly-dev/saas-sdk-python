@@ -11,7 +11,9 @@ import namespace.
 
 Packages:
 
-- **`saas_sdk._gen`** — the generated protobuf message bindings (`*_pb2`), from
+- **`saas_sdk._gen`** — private; consumers reach these types through the facades
+  that re-export them (see [Consuming](#consuming)). The generated protobuf
+  message bindings (`*_pb2`), from
   the accounts public proto at the ref recorded in `SOURCE.txt`. Only message
   types are generated; the runtime owns the Connect transport, so there are no
   client/server stubs. The bindings embed **only** the accounts protos this SDK
@@ -184,7 +186,23 @@ and shared-proto dependencies (`scripts/strip_options.py`), and regenerates
 
 ## Consuming
 
+Import `saas_sdk`, never `saas_sdk._gen`. Each facade re-exports the message
+types it takes and returns, so the generated tree stays an implementation
+detail:
+
 ```python
-from saas_sdk import datasource                 # the facade
-from saas_sdk._gen import datasource_pb2         # the message types
+from saas_sdk import datasource
+from saas_sdk.datasource import Datasource       # the message type, re-exported
+
+sources: list[Datasource] = datasource.new(gateway).list_sources(org)
 ```
+
+Likewise `work_context` re-exports `IssuedWorkContext`, `WorkContextScope`,
+`WorkContextReplayPolicy` and its enum values, and `authorization_revision`
+re-exports `CheckAuthorizationRevisionRequest`. These are the generated classes
+themselves, not wrappers, so `isinstance` and existing imports keep working.
+
+Naming `saas_sdk._gen` in consumer code pins this SDK's internal layout into
+yours: regenerating against a newer contract, or swapping the committed tree for
+a served dependency, would become a breaking change for you rather than a change
+here. `tests/test_api_boundary.py` fails if a public signature reintroduces it.
