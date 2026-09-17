@@ -20,6 +20,19 @@ from .work_context import WorkContext
 # importing saas_sdk._gen. Same object, so isinstance keeps working.
 CheckAuthorizationRevisionRequest = pb.CheckAuthorizationRevisionRequest
 
+# Without this, a star-import re-exports every public module-level name — which
+# includes ``pb``, the generated bindings themselves.
+__all__ = [
+    "REVISION_PATH",
+    "TIMEOUT",
+    "RevisionDenied",
+    "RevisionUnavailable",
+    "CheckAuthorizationRevisionRequest",
+    "revision_request",
+    "ConnectClient",
+    "GRPCClient",
+]
+
 try:
     import grpc
 except ImportError:
