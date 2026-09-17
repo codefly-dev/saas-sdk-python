@@ -10,6 +10,7 @@ a signature stops using those names.
 """
 
 import ast
+import re
 from pathlib import Path
 
 import pytest
@@ -62,6 +63,8 @@ def test_re_export_is_the_generated_type(module, name, generated):
 FACADES = sorted(
     p for p in _SRC.glob("*.py") if p.name == "__init__.py" or not p.name.startswith("_")
 )
+# An empty glob would parametrize every gate below into nothing and report green.
+assert FACADES, f"no facade modules found under {_SRC}"
 
 
 def _generated_aliases(tree):
@@ -110,7 +113,19 @@ def _consumer_reachable(tree):
 
 
 def _names(expr):
-    return {n.id for n in ast.walk(expr) if isinstance(n, ast.Name)}
+    """Names an annotation mentions, looking inside string annotations too — a
+    quoted forward reference is still a name the consumer has to be able to
+    resolve, so it has to be checked rather than skipped as an opaque constant."""
+    found = set()
+    for node in ast.walk(expr):
+        if isinstance(node, ast.Name):
+            found.add(node.id)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            try:
+                found |= _names(ast.parse(node.value, mode="eval").body)
+            except SyntaxError:
+                pass  # a plain string default or doc value, not an annotation
+    return found
 
 
 @pytest.mark.parametrize("path", FACADES, ids=lambda p: p.name)
@@ -129,6 +144,28 @@ def test_public_signatures_do_not_name_the_generated_package(path):
         "these signatures name the generated package, so a consumer cannot call them "
         "without importing saas_sdk._gen — re-export the type at module level and use "
         "that name:\n  " + "\n  ".join(leaks)
+    )
+
+
+def test_documented_examples_do_not_reach_the_generated_package():
+    """The README's examples are what a consumer copies, so a leak there
+    propagates exactly like one in a signature — and no signature check can see
+    it. Prose may name ``saas_sdk._gen`` (the Regenerating section does, and so
+    does the rule itself); only the code a reader lifts is constrained."""
+    readme = (_SRC.parent.parent / "README.md").read_text()
+    blocks = re.findall(r"^```python\n(.*?)^```", readme, re.DOTALL | re.MULTILINE)
+    assert blocks, "no python examples found in README.md"
+
+    leaks = [
+        f"{line.strip()}"
+        for block in blocks
+        for line in block.splitlines()
+        if "saas_sdk._gen" in line or re.search(r"\.pb\.", line)
+    ]
+    assert not leaks, (
+        "these README examples reach the generated package, teaching consumers the "
+        "import this SDK is trying to keep private — use the re-exported name:\n  "
+        + "\n  ".join(leaks)
     )
 
 

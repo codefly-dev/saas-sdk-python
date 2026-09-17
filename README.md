@@ -78,7 +78,7 @@ wc = work_context.new(gateway)
 parent = wc.start_task(
     bearer=user_bearer, org_id=org, task_id=task, session_id=session,
     audience="accounts",
-    scopes=[work_context.pb.WorkContextScope(resource_kind="evidence", actions=["read"])],
+    scopes=[work_context.WorkContextScope(resource_kind="evidence", actions=["read"])],
 )
 ctx = wc.exchange_audience(bearer=user_bearer, parent=parent, audience="evidence", scopes=scopes)
 work_context.attach(headers, ctx)   # per outgoing request
