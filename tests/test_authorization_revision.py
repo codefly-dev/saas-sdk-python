@@ -246,8 +246,8 @@ async def test_connect_total_budget_includes_credential_and_stream(monkeypatch):
         await client.aclose()
 
 
-@pytest_asyncio.fixture
-async def grpc_endpoint(tmp_path):
+@pytest_asyncio.fixture(params=["tls", "mesh"])
+async def grpc_endpoint(request, tmp_path):
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
     now = datetime.now(timezone.utc)
@@ -305,12 +305,19 @@ async def grpc_endpoint(tmp_path):
             ),
         )
     )
-    port = server.add_secure_port(
-        "localhost:0", grpc.ssl_server_credentials(((key_bytes, cert_bytes),))
-    )
+    if request.param == "tls":
+        port = server.add_secure_port(
+            "localhost:0", grpc.ssl_server_credentials(((key_bytes, cert_bytes),))
+        )
+    else:
+        # The current host's transport: h2c, with the mesh securing the hop.
+        port = server.add_insecure_port("localhost:0")
     await server.start()
-    tls = ssl.create_default_context(cadata=cert_bytes.decode())
-    client = revision.GRPCClient(f"https://localhost:{port}", token, tls_context=tls)
+    if request.param == "tls":
+        tls = ssl.create_default_context(cadata=cert_bytes.decode())
+        client = revision.GRPCClient(f"https://localhost:{port}", token, tls_context=tls)
+    else:
+        client = revision.MeshGRPCClient(f"localhost:{port}", token)
     try:
         yield client, state
     finally:
@@ -443,3 +450,41 @@ async def test_credential_cancellation_prevents_dispatch(monkeypatch):
         assert cancelled.is_set()
     finally:
         await client.aclose()
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "",
+        "accounts.invalid",
+        "accounts.invalid:0",
+        "accounts.invalid:65536",
+        "accounts.invalid:port",
+        "http://accounts.invalid:8080",
+        "https://accounts.invalid:8080",
+        "//accounts.invalid:8080",
+        "user@accounts.invalid:8080",
+        "accounts.invalid:8080/path",
+        "accounts.invalid:8080?x=1",
+        "accounts.invalid:8080#x",
+        "accounts.invalid :8080",
+        ":8080",
+    ],
+)
+async def test_mesh_address_is_a_resolved_host_and_port(address):
+    with pytest.raises(ValueError, match="host:port"):
+        revision.MeshGRPCClient(address, token)
+
+
+@pytest.mark.parametrize(
+    "address,target",
+    [
+        ("accounts.platform-saas.svc.cluster.local:8080", "accounts.platform-saas.svc.cluster.local:8080"),
+        ("127.0.0.1:8080", "127.0.0.1:8080"),
+        ("[::1]:8080", "[::1]:8080"),
+    ],
+)
+async def test_mesh_address_accepts_resolved_forms(address, target):
+    assert revision._mesh_address(address) == target
+    client = revision.MeshGRPCClient(address, token)
+    await client.aclose()
