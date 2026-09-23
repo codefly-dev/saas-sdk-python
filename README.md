@@ -114,7 +114,9 @@ Verification enforces the two-segment shape, the signature, structural
 validation (including the proto's `min_len` constraints on optional fields and
 monotonic scope attenuation), the time window, and the caller's expectations,
 raising `WorkContextError` (or `WorkContextDenied` from `require_scope`) on any
-failure. Replay policy is reported on the claims; enforcing single-use
+failure. When the key set itself cannot be fetched or read, `JWKSVerifier` raises
+`WorkContextUnavailable`, a `WorkContextError` subclass, so a consumer can report
+an authority outage as unavailable rather than as an invalid capability. Replay policy is reported on the claims; enforcing single-use
 consumption still requires a durable replay store the caller owns.
 
 ## Current authorization revision
@@ -125,16 +127,25 @@ actor's original scopes, including resource IDs and revision. The consumer keeps
 signature/lifetime verification, action/resource policy and public error mapping.
 
 ```python
-from saas_sdk.authorization_revision import GRPCClient, RevisionDenied, RevisionUnavailable
+from saas_sdk.authorization_revision import MeshGRPCClient, RevisionDenied, RevisionUnavailable
 
-client = GRPCClient("https://accounts.internal:50051", current_internal_credential)
+# The host:port Codefly resolved for accounts' private `rest` endpoint.
+client = MeshGRPCClient(resolved_accounts_rest_address, current_internal_credential)
 try:
     await client.check(verified_claims)
 finally:
     await client.aclose()
 ```
 
-Install `saas-sdk-python[revision-grpc]` for the canonical TLS gRPC client. Where an
+A current host serves this RPC as cleartext HTTP/2 (h2c) multiplexed onto accounts'
+private `rest` endpoint, and leaves in-cluster transport security to the service
+mesh (module-saas-starter `module/INTERNAL_TRANSPORT.md`). `MeshGRPCClient` dials
+that resolved `host:port` and adds no TLS; it refuses a URL, a path or credentials
+in the address. Use it only where the mesh enforces mutual TLS on the hop.
+`GRPCClient("https://…", …)` remains for a deployment that terminates server TLS on
+accounts itself.
+
+Install `saas-sdk-python[revision-grpc]` for either gRPC client. Where an
 endpoint explicitly serves Connect, install `[revision-connect]` and select
 `ConnectClient`; selecting that compatibility transport is a composition choice,
 never an automatic fallback. `revision_request(claims)` needs neither networking

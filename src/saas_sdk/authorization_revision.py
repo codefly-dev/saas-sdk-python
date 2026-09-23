@@ -3,6 +3,14 @@
 The caller retains signature, lifetime, scope and resource policy. Every check
 refreshes its internal credential and contacts the authority; no decision is cached.
 Networking dependencies are optional extras so projection remains lightweight.
+
+Two gRPC transports reach the same RPC. ``MeshGRPCClient`` is the one a current
+host serves: the host's internal tier is cleartext HTTP/2 (h2c) multiplexed onto
+accounts' private ``rest`` endpoint, and in-cluster transport security belongs to
+the service mesh (module-saas-starter ``module/INTERNAL_TRANSPORT.md``). The
+caller dials the address Codefly resolved for that endpoint; the process adds no
+TLS because the mesh has already authenticated both ends. ``GRPCClient`` keeps
+the explicit server-TLS origin for a deployment that terminates TLS on accounts.
 """
 
 import asyncio
@@ -216,39 +224,46 @@ class ConnectClient:
         await self.client.aclose()
 
 
-class GRPCClient:
-    """TLS gRPC on the canonical internal RPC; no retries, fallback or authority cache."""
+_CHANNEL_OPTIONS = (
+    ("grpc.enable_retries", 0),
+    ("grpc.enable_http_proxy", 0),
+    ("grpc.max_receive_message_length", 8192),
+    ("grpc.max_send_message_length", 65536),
+)
 
-    def __init__(self, origin, credential, *, tls_context=None):
-        if grpc is None:
-            raise ImportError(
-                "Install saas-sdk-python[revision-grpc] for gRPC revision checks"
-            )
-        url = urlsplit(_https_origin(origin))
+
+def _mesh_address(value: str) -> str:
+    """A resolved ``host:port`` with nothing else: no scheme, path or credentials.
+
+    The address is what Codefly resolves for accounts' private ``rest`` endpoint,
+    so anything beyond a host and a nonzero port is a configuration error, not a
+    form to interpret.
+    """
+    if (
+        not isinstance(value, str)
+        or "://" in value
+        or any(c in value for c in "/?#@\\")
+        or any(c.isspace() or ord(c) < 32 for c in value)
+    ):
+        raise ValueError("Accounts requires a resolved host:port internal address")
+    url = urlsplit("//" + value)
+    try:
+        port = url.port
+    except ValueError:
+        port = None
+    if not url.hostname or not port:
+        raise ValueError("Accounts requires a resolved host:port internal address")
+    host = f"[{url.hostname}]" if ":" in url.hostname else url.hostname
+    return f"{host}:{port}"
+
+
+class _GRPCRevision:
+    """The canonical internal RPC over an already opened channel; no retries,
+    fallback or authority cache. Subclasses choose only the transport."""
+
+    def _bind(self, channel, credential):
         self.credential = credential
-        context = (
-            tls_context if tls_context is not None else ssl.create_default_context()
-        )
-        if not context.check_hostname or context.verify_mode != ssl.CERT_REQUIRED:
-            raise ValueError("Accounts TLS verification cannot be disabled")
-        # Use the deployment-selected trust roots, not gRPC environment overrides.
-        roots = b"".join(
-            ssl.DER_cert_to_PEM_cert(cert).encode("ascii")
-            for cert in context.get_ca_certs(binary_form=True)
-        )
-        if not roots:
-            raise ValueError("Accounts requires trusted TLS roots")
-        host = f"[{url.hostname}]" if ":" in url.hostname else url.hostname
-        self.channel = grpc.aio.secure_channel(
-            f"{host}:{url.port or 443}",
-            grpc.ssl_channel_credentials(root_certificates=roots),
-            options=(
-                ("grpc.enable_retries", 0),
-                ("grpc.enable_http_proxy", 0),
-                ("grpc.max_receive_message_length", 8192),
-                ("grpc.max_send_message_length", 65536),
-            ),
-        )
+        self.channel = channel
         self.rpc = self.channel.unary_unary(
             REVISION_PATH,
             request_serializer=pb.CheckAuthorizationRevisionRequest.SerializeToString,
@@ -293,3 +308,58 @@ class GRPCClient:
 
     async def aclose(self) -> None:
         await self.channel.close()
+
+
+class GRPCClient(_GRPCRevision):
+    """Server-TLS gRPC on the canonical internal RPC, for an explicit HTTPS origin."""
+
+    def __init__(self, origin, credential, *, tls_context=None):
+        if grpc is None:
+            raise ImportError(
+                "Install saas-sdk-python[revision-grpc] for gRPC revision checks"
+            )
+        url = urlsplit(_https_origin(origin))
+        context = (
+            tls_context if tls_context is not None else ssl.create_default_context()
+        )
+        if not context.check_hostname or context.verify_mode != ssl.CERT_REQUIRED:
+            raise ValueError("Accounts TLS verification cannot be disabled")
+        # Use the deployment-selected trust roots, not gRPC environment overrides.
+        roots = b"".join(
+            ssl.DER_cert_to_PEM_cert(cert).encode("ascii")
+            for cert in context.get_ca_certs(binary_form=True)
+        )
+        if not roots:
+            raise ValueError("Accounts requires trusted TLS roots")
+        host = f"[{url.hostname}]" if ":" in url.hostname else url.hostname
+        self._bind(
+            grpc.aio.secure_channel(
+                f"{host}:{url.port or 443}",
+                grpc.ssl_channel_credentials(root_certificates=roots),
+                options=_CHANNEL_OPTIONS,
+            ),
+            credential,
+        )
+
+
+class MeshGRPCClient(_GRPCRevision):
+    """h2c gRPC to the resolved address of accounts' private ``rest`` endpoint.
+
+    This is the transport a current host serves (``INTERNAL_TRANSPORT.md``):
+    the mesh authenticates both workloads and encrypts the hop, and the process
+    adds no TLS of its own. Pass the ``host:port`` Codefly resolved for the
+    endpoint, never a URL. Deploy it only where the mesh enforces mutual TLS on
+    the hop; outside one, the internal credential would cross the wire in the
+    clear.
+    """
+
+    def __init__(self, address, credential):
+        if grpc is None:
+            raise ImportError(
+                "Install saas-sdk-python[revision-grpc] for gRPC revision checks"
+            )
+        self._bind(
+            grpc.aio.insecure_channel(_mesh_address(address), options=_CHANNEL_OPTIONS),
+            credential,
+        )
+

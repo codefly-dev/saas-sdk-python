@@ -62,6 +62,7 @@ __all__ = [
     "MAX_TTL",
     "WorkContextError",
     "WorkContextDenied",
+    "WorkContextUnavailable",
     "WorkContextMintError",
     "WorkScope",
     "WorkActor",
@@ -131,6 +132,13 @@ class WorkContextDenied(WorkContextError):
     """A structurally valid, verified Work Context does not grant a required
     scope. Distinct from :class:`WorkContextError` so authorization misses can be
     told apart from invalid capabilities."""
+
+
+class WorkContextUnavailable(WorkContextError):
+    """The published key set could not be fetched or read, so no presented
+    token was judged. Distinct from :class:`WorkContextError` so a verifier
+    outage can be reported as the authority being unavailable rather than as
+    the caller presenting an invalid capability; both still fail closed."""
 
 
 @dataclass(frozen=True)
@@ -409,7 +417,10 @@ class JWKSVerifier:
     def _refresh_locked(self) -> tuple[Verifier, frozenset[str], int]:
         try:
             keys = self._fetch()
-            verifier = Verifier(keys, now=self._now, clock_skew=self._clock_skew)
+            try:
+                verifier = Verifier(keys, now=self._now, clock_skew=self._clock_skew)
+            except WorkContextError as error:
+                raise WorkContextUnavailable(str(error)) from None
         except WorkContextError as error:
             # Open a short backoff window so a failed refresh does not re-hit the
             # endpoint on the next request (avoids an outage-driven fetch storm).
@@ -431,17 +442,21 @@ class JWKSVerifier:
         try:
             response = self._opener.open(request, timeout=self._request_timeout)
         except urllib.error.HTTPError as error:
-            raise WorkContextError(f"Work Context JWKS returned HTTP {error.code}") from None
+            raise WorkContextUnavailable(f"Work Context JWKS returned HTTP {error.code}") from None
         except (urllib.error.URLError, OSError) as error:
-            raise WorkContextError(f"fetch Work Context JWKS: {error}") from None
+            raise WorkContextUnavailable(f"fetch Work Context JWKS: {error}") from None
         with response:
             content_type = response.headers.get("Content-Type")
             if content_type and content_type.split(";", 1)[0].strip().lower() != "application/json":
-                raise WorkContextError("Work Context JWKS is not application/json")
+                raise WorkContextUnavailable("Work Context JWKS is not application/json")
             payload = response.read(_JWKS_MAX_BYTES + 1)
         if len(payload) > _JWKS_MAX_BYTES:
-            raise WorkContextError(f"Work Context JWKS exceeds {_JWKS_MAX_BYTES} bytes")
-        return _parse_jwks(payload)
+            raise WorkContextUnavailable(f"Work Context JWKS exceeds {_JWKS_MAX_BYTES} bytes")
+        try:
+            return _parse_jwks(payload)
+        except WorkContextError as error:
+            # A malformed key set is the authority's failure, never the caller's.
+            raise WorkContextUnavailable(str(error)) from None
 
 
 def _parse_jwks(payload: bytes) -> dict[str, bytes]:

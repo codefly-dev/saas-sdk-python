@@ -178,14 +178,14 @@ def test_failed_refresh_backs_off_instead_of_refetching_every_call():
         now_box["unix"] += 61  # cache expired; endpoint now down
         healthy["ok"] = False
         for _ in range(5):
-            with pytest.raises(wc.WorkContextError):
+            with pytest.raises(wc.WorkContextUnavailable):
                 verifier.verify(token)
         # One refresh attempt for the whole backoff window, not one per call.
         assert state.requests == 2
 
         # Once the backoff elapses the verifier tries again (still down => one more).
         now_box["unix"] += int(wc._JWKS_FAILED_REFRESH_BACKOFF.total_seconds())
-        with pytest.raises(wc.WorkContextError):
+        with pytest.raises(wc.WorkContextUnavailable):
             verifier.verify(token)
         assert state.requests == 3
     finally:
@@ -217,7 +217,7 @@ def test_rejects_redirects_without_following_them():
     src_url = f"http://{host}:{port}/v1/auth/.well-known/jwks.json"
     try:
         verifier = _verifier(src_url)
-        with pytest.raises(wc.WorkContextError):
+        with pytest.raises(wc.WorkContextUnavailable):
             verifier.verify(_token("key-1", _seed(1)))
         assert destination_hits["n"] == 0
     finally:
@@ -230,7 +230,7 @@ def test_refresh_fails_closed_at_boot():
     httpd, url = _server(state)
     try:
         verifier = _verifier(url)
-        with pytest.raises(wc.WorkContextError, match="HTTP 503"):
+        with pytest.raises(wc.WorkContextUnavailable, match="HTTP 503"):
             verifier.refresh()
     finally:
         httpd.shutdown()
@@ -265,8 +265,24 @@ def test_rejects_malformed_or_bounded_jwks(response):
     httpd, url = _server(state)
     try:
         verifier = _verifier(url)
-        with pytest.raises(wc.WorkContextError):
+        with pytest.raises(wc.WorkContextUnavailable):
             verifier.verify(_token("key-1", _seed(1)))
+    finally:
+        httpd.shutdown()
+
+
+def test_invalid_token_against_a_served_key_set_is_not_unavailability():
+    """An outage and a bad capability both fail closed, but only the outage is
+    the authority's: a caller holding a token the served keys reject must see an
+    invalid-capability error, never "unavailable" (which invites a retry)."""
+    keys = {"key-1": _public_bytes(_seed(1))}
+    state = _State(_ok(keys))
+    httpd, url = _server(state)
+    try:
+        verifier = _verifier(url)
+        with pytest.raises(wc.WorkContextError) as caught:
+            verifier.verify(_token("key-1", _seed(2)))
+        assert not isinstance(caught.value, wc.WorkContextUnavailable)
     finally:
         httpd.shutdown()
 
@@ -276,7 +292,7 @@ def test_rejects_oversized_jwks():
     state = _State(lambda: (200, "application/json", body))
     httpd, url = _server(state)
     try:
-        with pytest.raises(wc.WorkContextError, match="exceeds"):
+        with pytest.raises(wc.WorkContextUnavailable, match="exceeds"):
             _verifier(url).verify(_token("key-1", _seed(1)))
     finally:
         httpd.shutdown()
