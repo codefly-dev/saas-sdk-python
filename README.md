@@ -15,7 +15,7 @@ Packages:
   the accounts public proto at the ref recorded in `SOURCE.txt`. Only message
   types are generated; the runtime owns the Connect transport, so there are no
   client/server stubs. The bindings embed **only** the accounts protos this SDK
-  exposes (`datasource.proto`, `work_contexts.proto`) — the `buf.validate` /
+  exposes (`audit.proto`, `datasource.proto`, `work_contexts.proto`) — the `buf.validate` /
   `saas.policy` custom options, the `google.api` HTTP annotations, and their
   shared descriptors are stripped during generation, so this SDK never registers
   a shared proto into the global descriptor pool (which would collide with a
@@ -42,10 +42,65 @@ Packages:
   `gateway` is any value exposing `unary(procedure, request, response_type)` —
   which `solution_runtime.Gateway` already satisfies. The runtime stays
   datasource-agnostic and takes **no** dependency on this SDK.
+- **`saas_sdk.audit`** — a gateway-bound facade over the accounts
+  `AuditService`: read an organization's audit trail as the signed-in person.
+  See [Audit log](#audit-log).
 - **`saas_sdk.work_context`** — both halves of the `x-codefly-work-context`
   feature. **Mint side**, a delegated caller mints a short-lived context at turn
   start and stamps it on outgoing calls. **Callee side**, a service verifies a
   presented context. See below.
+
+## Audit log
+
+`saas_sdk.audit` reads the accounts audit trail through the same
+`Gateway.unary` seam as `datasource`, so `solution_runtime.Gateway` satisfies it
+as-is and every call is made as the signed-in person whose bearer the gateway
+carries:
+
+```python
+from datetime import datetime, timedelta, timezone
+
+from saas_sdk import audit
+
+log = audit.new(gateway)
+
+week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+token = ""
+while True:
+    # Send the same filters with every page_token; an empty token is the last page.
+    page = log.query(org_id, event_type="example.item.created", from_=week_ago, page_token=token)
+    for event in page.events:
+        print(event.created_at.ToDatetime(), event.actor_id, dict(event.payload))
+    token = page.next_page_token
+    if not token:
+        break
+
+per_day = log.aggregate(
+    org_id,
+    group_bys=["event_type", "time"],
+    bucket="day",
+    metrics=[audit.AuditMetric(op="sum", field="payload:amount", alias="total")],
+)
+types = log.list_event_types()
+```
+
+- `query` → one page (`QueryAuditLogResponse`: `events`, `next_page_token`,
+  `total_count`), newest first. `page_size` defaults to 50; the server accepts
+  1–100 and rejects 0.
+- `aggregate` → the whole `AggregateAuditLogResponse` (not just `buckets`), so
+  fields a newer server adds to it stay reachable.
+- `list_event_types` → the registered `AuditEventType`s.
+- `from_` / `to` must be timezone-aware (`ValueError` otherwise, before any call).
+
+Every RPC needs `audit:read`; `query` and `aggregate` also need membership of
+`org_id`. A refusal of the caller — Connect `unauthenticated` or
+`permission_denied` — raises `audit.AuditDenied` (`.code` is
+`audit.UNAUTHENTICATED` or `audit.PERMISSION_DENIED`, `.procedure` the RPC). Any
+other failure is the gateway's own error, unchanged, so a solution can answer
+"sign in" / "not allowed" separately from "try again". With
+`solution_runtime.Gateway`, a refusal is recognised from the coherent Connect
+pairs 401/`unauthenticated` and 403/`permission_denied`; another gateway can
+raise `AuditDenied` itself.
 
 ## Work Context
 
@@ -189,9 +244,10 @@ From a checkout of that repo:
 scripts/generate.sh <module-saas-starter>/module/services/accounts/proto
 ```
 
-That builds a descriptor image for `datasource.proto`, strips the custom options
-and shared-proto dependencies (`scripts/strip_options.py`), and regenerates
-`src/saas_sdk/_gen/datasource_pb2.py`. **Never hand-edit `_gen/`.**
+That builds a descriptor image for the protos listed in `scripts/generate.sh`,
+strips the custom options and shared-proto dependencies
+(`scripts/strip_options.py`), and regenerates their `src/saas_sdk/_gen/*_pb2.py`
+and `.pyi`. **Never hand-edit `_gen/`.**
 
 ## Consuming
 

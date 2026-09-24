@@ -1,6 +1,7 @@
 src/saas_sdk/_gen generated from codefly-dev/module-saas-starter@69ef9d19675d94f3a828c4fb4ffd8f80d0bc6272
 (accounts public proto: module/services/accounts/proto)
 services:
+  saas.accounts.v1.AuditService (audit.proto)
   saas.accounts.v1.DatasourceService (datasource.proto)
   saas.accounts.v1.WorkContextService (work_contexts.proto)
 custom options + shared descriptors stripped — see scripts/generate.sh

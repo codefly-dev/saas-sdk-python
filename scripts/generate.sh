@@ -16,6 +16,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 protos=(
+  saas/accounts/v1/audit.proto
   saas/accounts/v1/datasource.proto
   saas/accounts/v1/work_contexts.proto
 )

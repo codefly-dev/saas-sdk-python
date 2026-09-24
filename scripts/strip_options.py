@@ -19,7 +19,13 @@ DROP_DEP_PREFIXES = ("buf/validate/", "saas/policy/", "google/api/")
 
 
 def clear_message(message):
+    # map_entry is structural, not an annotation: it is what makes a synthesized
+    # nested FooEntry type back a map<K, V> field. Dropping it would silently turn
+    # every map field into a repeated entry message, so keep it through the strip.
+    map_entry = message.options.map_entry
     message.ClearField("options")
+    if map_entry:
+        message.options.map_entry = True
     for field in message.field:
         field.ClearField("options")
     for nested in message.nested_type:
