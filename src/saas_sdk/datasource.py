@@ -60,22 +60,35 @@ class Client:
         *,
         org_id: str,
         repo: str,
-        collection: str,
-        access_token: str,
+        collection: str = "",
+        boundary_node_id: str = "",
+        access_token: str = "",
         paths: Sequence[str] = (),
         branch: str = "",
         webhook_secret: str = "",
     ) -> pb.Datasource:
         """Register a GitHub repository as a datasource and return the non-secret
-        projection the server stored."""
+        projection the server stored.
+
+        The pulled entries land in exactly one data boundary: ``collection`` is
+        a label the host resolves to (or mints as) a collection node, and
+        ``boundary_node_id`` names an existing scope node. An empty
+        ``access_token`` connects through the deployment's GitHub App instead
+        of a pasted token.
+        """
+        if bool(collection) == bool(boundary_node_id):
+            raise ValueError("pass exactly one of collection or boundary_node_id")
+        boundary = (
+            {"collection_label": collection} if collection else {"boundary_node_id": boundary_node_id}
+        )
         request = pb.AddGitHubSourceRequest(
             org_id=org_id,
             repo=repo,
             paths=list(paths),
             branch=branch,
-            target_collection=collection,
             access_token=access_token,
             webhook_secret=webhook_secret,
+            **boundary,
         )
         response = self._gateway.unary(
             _SERVICE + "AddGitHubSource", request, pb.AddGitHubSourceResponse
