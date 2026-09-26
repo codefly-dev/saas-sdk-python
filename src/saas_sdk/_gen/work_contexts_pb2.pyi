@@ -51,6 +51,30 @@ class StartTaskWorkContextRequest(_message.Message):
     project_id: str
     def __init__(self, org_id: _Optional[str] = ..., task_id: _Optional[str] = ..., session_id: _Optional[str] = ..., actor_principal_id: _Optional[str] = ..., authority_scopes: _Optional[_Iterable[_Union[WorkContextScope, _Mapping]]] = ..., audience: _Optional[str] = ..., replay_policy: _Optional[_Union[WorkContextReplayPolicy, str]] = ..., ttl_seconds: _Optional[int] = ..., workspace_id: _Optional[str] = ..., project_id: _Optional[str] = ...) -> None: ...
 
+class StartInstallationTaskRequest(_message.Message):
+    __slots__ = ("org_id", "installation_id", "task_id", "session_id", "authority_scopes", "audience", "replay_policy", "ttl_seconds", "workspace_id", "project_id")
+    ORG_ID_FIELD_NUMBER: _ClassVar[int]
+    INSTALLATION_ID_FIELD_NUMBER: _ClassVar[int]
+    TASK_ID_FIELD_NUMBER: _ClassVar[int]
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    AUTHORITY_SCOPES_FIELD_NUMBER: _ClassVar[int]
+    AUDIENCE_FIELD_NUMBER: _ClassVar[int]
+    REPLAY_POLICY_FIELD_NUMBER: _ClassVar[int]
+    TTL_SECONDS_FIELD_NUMBER: _ClassVar[int]
+    WORKSPACE_ID_FIELD_NUMBER: _ClassVar[int]
+    PROJECT_ID_FIELD_NUMBER: _ClassVar[int]
+    org_id: str
+    installation_id: str
+    task_id: str
+    session_id: str
+    authority_scopes: _containers.RepeatedCompositeFieldContainer[WorkContextScope]
+    audience: str
+    replay_policy: WorkContextReplayPolicy
+    ttl_seconds: int
+    workspace_id: str
+    project_id: str
+    def __init__(self, org_id: _Optional[str] = ..., installation_id: _Optional[str] = ..., task_id: _Optional[str] = ..., session_id: _Optional[str] = ..., authority_scopes: _Optional[_Iterable[_Union[WorkContextScope, _Mapping]]] = ..., audience: _Optional[str] = ..., replay_policy: _Optional[_Union[WorkContextReplayPolicy, str]] = ..., ttl_seconds: _Optional[int] = ..., workspace_id: _Optional[str] = ..., project_id: _Optional[str] = ...) -> None: ...
+
 class StartRootSessionWorkContextRequest(_message.Message):
     __slots__ = ("org_id", "parent_work_context_token", "session_id", "audience", "replay_policy", "ttl_seconds")
     ORG_ID_FIELD_NUMBER: _ClassVar[int]

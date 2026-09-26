@@ -15,7 +15,11 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+# datasource.proto reads its sync state from saas.jobs.v1 (JobState,
+# JobExecutionReference), so that file is a real message dependency and is
+# generated alongside, not stripped.
 protos=(
+  saas/jobs/v1/jobs.proto
   saas/accounts/v1/datasource.proto
   saas/accounts/v1/work_contexts.proto
 )
@@ -30,7 +34,10 @@ buf generate --template "$repo_root/buf.gen.yaml" "$tmp/stripped.binpb" -o "$tmp
 
 for proto in "${protos[@]}"; do
   base="$(basename "$proto" .proto)"
-  cp "$tmp/out/saas/accounts/v1/${base}_pb2.py"  "$repo_root/src/saas_sdk/_gen/${base}_pb2.py"
-  cp "$tmp/out/saas/accounts/v1/${base}_pb2.pyi" "$repo_root/src/saas_sdk/_gen/${base}_pb2.pyi"
+  # strip_options.py moves a proto another proto imports under saas_sdk/_gen/.
+  dir="$(dirname "$proto")"
+  [ -f "$tmp/out/${dir}/${base}_pb2.py" ] || dir="saas_sdk/_gen"
+  cp "$tmp/out/${dir}/${base}_pb2.py"  "$repo_root/src/saas_sdk/_gen/${base}_pb2.py"
+  cp "$tmp/out/${dir}/${base}_pb2.pyi" "$repo_root/src/saas_sdk/_gen/${base}_pb2.pyi"
 done
 echo "regenerated src/saas_sdk/_gen from ${#protos[@]} proto(s)"

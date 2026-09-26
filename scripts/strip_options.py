@@ -9,7 +9,16 @@ Usage: strip_options.py <in.binpb> <out.binpb> <proto>...
 Each <proto> is a file kept in the output with its options and shared-proto
 dependencies stripped; the google.protobuf well-known types those files still
 reference are carried through as-is.
+
+A <proto> that another <proto> imports (saas/jobs/v1/jobs.proto, which
+datasource.proto reads its sync state from) is renamed into this SDK's own
+package path, saas_sdk/_gen/<name>.proto, and its importers follow. The python
+plugin writes an import from the file path, so this is what makes the
+generated `from saas_sdk._gen import jobs_pb2` resolve inside this package
+rather than naming a top-level `saas` package this SDK does not own.
 """
+
+import os
 
 import sys
 
@@ -46,6 +55,10 @@ def strip(file_proto):
 
 targets = set(sys.argv[3:])
 
+
+def local_name(name):
+    return "saas_sdk/_gen/" + os.path.basename(name)
+
 source = descriptor_pb2.FileDescriptorSet()
 source.ParseFromString(open(sys.argv[1], "rb").read())
 
@@ -67,6 +80,16 @@ for file_proto in source.file:
         out.file.append(stripped[file_proto.name])
     elif file_proto.name in needed_wkt:
         out.file.append(file_proto)
+
+# A target another target imports is SDK-local: rename it and its importers'
+# references, after the order above is fixed from the original names.
+imported = {d for f in stripped.values() for d in f.dependency if d in targets}
+for file_proto in out.file:
+    deps = [local_name(d) if d in imported else d for d in file_proto.dependency]
+    del file_proto.dependency[:]
+    file_proto.dependency.extend(deps)
+    if file_proto.name in imported:
+        file_proto.name = local_name(file_proto.name)
 
 open(sys.argv[2], "wb").write(out.SerializeToString())
 print("kept:", [f.name for f in out.file], file=sys.stderr)

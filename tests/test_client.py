@@ -50,7 +50,7 @@ _ROUTES = {
     "/saas.accounts.v1.DatasourceService/AddGitHubSource": (
         pb.AddGitHubSourceRequest,
         lambda req: pb.AddGitHubSourceResponse(
-            datasource=pb.Datasource(id="ds-1", target_collection=req.target_collection)
+            datasource=pb.Datasource(id="ds-1", boundary_label=req.collection_label)
         ),
     ),
     "/saas.accounts.v1.DatasourceService/ListSources": (
@@ -117,14 +117,38 @@ def test_add_github_source_maps_fields_and_unwraps(server):
     path, request = received[0]
     assert path == "/saas.accounts.v1.DatasourceService/AddGitHubSource"
     assert request.repo == "codefly-dev/module-saas-starter"
-    assert request.target_collection == "handbook"
+    assert request.collection_label == "handbook"
+    assert request.WhichOneof("boundary") == "collection_label"
     assert request.access_token == "ghp_secret"
     assert request.webhook_secret == "whsec"
     assert list(request.paths) == ["docs", "handbook"]
     assert request.branch == "main"
     # Response envelope unwrapped to the bare Datasource.
     assert source.id == "ds-1"
-    assert source.target_collection == "handbook"
+    assert source.boundary_label == "handbook"
+
+
+def test_add_github_source_into_an_existing_boundary(server):
+    client, received = server
+
+    client.add_github_source(
+        org_id="11111111-1111-1111-1111-111111111111",
+        repo="codefly-dev/module-saas-starter",
+        boundary_node_id="22222222-2222-2222-2222-222222222222",
+    )
+
+    _, request = received[0]
+    assert request.WhichOneof("boundary") == "boundary_node_id"
+    assert request.boundary_node_id == "22222222-2222-2222-2222-222222222222"
+    assert request.access_token == ""
+
+
+def test_add_github_source_needs_exactly_one_boundary(server):
+    client, received = server
+    for kwargs in ({}, {"collection": "handbook", "boundary_node_id": "22222222-2222-2222-2222-222222222222"}):
+        with pytest.raises(ValueError):
+            client.add_github_source(org_id="org", repo="acme/widgets", **kwargs)
+    assert received == []
 
 
 def test_list_sources_returns_bare_list(server):
