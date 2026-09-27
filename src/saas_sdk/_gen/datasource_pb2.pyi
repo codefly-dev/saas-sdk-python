@@ -89,6 +89,17 @@ class DatasourceDomainStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     DATASOURCE_DOMAIN_STATUS_UNSPECIFIED: _ClassVar[DatasourceDomainStatus]
     DATASOURCE_DOMAIN_STATUS_PENDING: _ClassVar[DatasourceDomainStatus]
     DATASOURCE_DOMAIN_STATUS_VERIFIED: _ClassVar[DatasourceDomainStatus]
+
+class SourceDelegationRevocation(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    SOURCE_DELEGATION_REVOCATION_UNSPECIFIED: _ClassVar[SourceDelegationRevocation]
+    SOURCE_DELEGATION_REVOCATION_REVOKED: _ClassVar[SourceDelegationRevocation]
+    SOURCE_DELEGATION_REVOCATION_REPLACED: _ClassVar[SourceDelegationRevocation]
+    SOURCE_DELEGATION_REVOCATION_SOURCE_DELETED: _ClassVar[SourceDelegationRevocation]
+    SOURCE_DELEGATION_REVOCATION_MEMBER_REMOVED: _ClassVar[SourceDelegationRevocation]
+    SOURCE_DELEGATION_REVOCATION_PERMISSION_LOST: _ClassVar[SourceDelegationRevocation]
+    SOURCE_DELEGATION_REVOCATION_USER_INACTIVE: _ClassVar[SourceDelegationRevocation]
+    SOURCE_DELEGATION_REVOCATION_BINDING_CHANGED: _ClassVar[SourceDelegationRevocation]
 DATASOURCE_PROVIDER_UNSPECIFIED: DatasourceProvider
 DATASOURCE_PROVIDER_GITHUB: DatasourceProvider
 DATASOURCE_PROVIDER_API: DatasourceProvider
@@ -141,6 +152,14 @@ SOURCE_SYNC_TRIGGER_WEBHOOK: SourceSyncTrigger
 DATASOURCE_DOMAIN_STATUS_UNSPECIFIED: DatasourceDomainStatus
 DATASOURCE_DOMAIN_STATUS_PENDING: DatasourceDomainStatus
 DATASOURCE_DOMAIN_STATUS_VERIFIED: DatasourceDomainStatus
+SOURCE_DELEGATION_REVOCATION_UNSPECIFIED: SourceDelegationRevocation
+SOURCE_DELEGATION_REVOCATION_REVOKED: SourceDelegationRevocation
+SOURCE_DELEGATION_REVOCATION_REPLACED: SourceDelegationRevocation
+SOURCE_DELEGATION_REVOCATION_SOURCE_DELETED: SourceDelegationRevocation
+SOURCE_DELEGATION_REVOCATION_MEMBER_REMOVED: SourceDelegationRevocation
+SOURCE_DELEGATION_REVOCATION_PERMISSION_LOST: SourceDelegationRevocation
+SOURCE_DELEGATION_REVOCATION_USER_INACTIVE: SourceDelegationRevocation
+SOURCE_DELEGATION_REVOCATION_BINDING_CHANGED: SourceDelegationRevocation
 
 class GitHubDatasourceConfig(_message.Message):
     __slots__ = ("repo", "paths", "branch", "file_extensions")
@@ -791,3 +810,55 @@ class DeleteDatasourceDomainRequest(_message.Message):
 class DeleteDatasourceDomainResponse(_message.Message):
     __slots__ = ()
     def __init__(self) -> None: ...
+
+class SourceDelegation(_message.Message):
+    __slots__ = ("id", "source_id", "principal_id", "module", "binding", "created_at", "revoked_at", "revocation", "revoked_by")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_ID_FIELD_NUMBER: _ClassVar[int]
+    PRINCIPAL_ID_FIELD_NUMBER: _ClassVar[int]
+    MODULE_FIELD_NUMBER: _ClassVar[int]
+    BINDING_FIELD_NUMBER: _ClassVar[int]
+    CREATED_AT_FIELD_NUMBER: _ClassVar[int]
+    REVOKED_AT_FIELD_NUMBER: _ClassVar[int]
+    REVOCATION_FIELD_NUMBER: _ClassVar[int]
+    REVOKED_BY_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    source_id: str
+    principal_id: str
+    module: str
+    binding: str
+    created_at: _timestamp_pb2.Timestamp
+    revoked_at: _timestamp_pb2.Timestamp
+    revocation: SourceDelegationRevocation
+    revoked_by: str
+    def __init__(self, id: _Optional[str] = ..., source_id: _Optional[str] = ..., principal_id: _Optional[str] = ..., module: _Optional[str] = ..., binding: _Optional[str] = ..., created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., revoked_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., revocation: _Optional[_Union[SourceDelegationRevocation, str]] = ..., revoked_by: _Optional[str] = ...) -> None: ...
+
+class ListSourceDelegationsRequest(_message.Message):
+    __slots__ = ("org_id", "source_id", "include_revoked")
+    ORG_ID_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_ID_FIELD_NUMBER: _ClassVar[int]
+    INCLUDE_REVOKED_FIELD_NUMBER: _ClassVar[int]
+    org_id: str
+    source_id: str
+    include_revoked: bool
+    def __init__(self, org_id: _Optional[str] = ..., source_id: _Optional[str] = ..., include_revoked: bool = ...) -> None: ...
+
+class ListSourceDelegationsResponse(_message.Message):
+    __slots__ = ("delegations",)
+    DELEGATIONS_FIELD_NUMBER: _ClassVar[int]
+    delegations: _containers.RepeatedCompositeFieldContainer[SourceDelegation]
+    def __init__(self, delegations: _Optional[_Iterable[_Union[SourceDelegation, _Mapping]]] = ...) -> None: ...
+
+class RevokeSourceDelegationRequest(_message.Message):
+    __slots__ = ("org_id", "id")
+    ORG_ID_FIELD_NUMBER: _ClassVar[int]
+    ID_FIELD_NUMBER: _ClassVar[int]
+    org_id: str
+    id: str
+    def __init__(self, org_id: _Optional[str] = ..., id: _Optional[str] = ...) -> None: ...
+
+class RevokeSourceDelegationResponse(_message.Message):
+    __slots__ = ("delegation",)
+    DELEGATION_FIELD_NUMBER: _ClassVar[int]
+    delegation: SourceDelegation
+    def __init__(self, delegation: _Optional[_Union[SourceDelegation, _Mapping]] = ...) -> None: ...

@@ -1,4 +1,4 @@
-src/saas_sdk/_gen generated from codefly-dev/module-saas-starter@2637cbb4557e912a009456b80c3f26a83287c6e6
+src/saas_sdk/_gen generated from codefly-dev/module-saas-starter@c201081235a61da83500db4c30a8bbec7d391e1a
 (accounts public proto: module/services/accounts/proto)
 services:
   saas.accounts.v1.DatasourceService (datasource.proto)
