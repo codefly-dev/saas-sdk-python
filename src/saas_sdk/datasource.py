@@ -31,7 +31,11 @@ from typing import Protocol, TypeVar
 
 from saas_sdk._gen import datasource_pb2 as pb
 
-__all__ = ["Client", "Gateway", "new", "pb"]
+# Re-exported so a consumer names the types this facade returns without importing
+# saas_sdk._gen. Same objects, so isinstance and existing imports keep working.
+Datasource = pb.Datasource
+
+__all__ = ["Client", "Datasource", "Gateway", "new"]
 
 _M = TypeVar("_M")
 
@@ -66,7 +70,7 @@ class Client:
         paths: Sequence[str] = (),
         branch: str = "",
         webhook_secret: str = "",
-    ) -> pb.Datasource:
+    ) -> Datasource:
         """Register a GitHub repository as a datasource and return the non-secret
         projection the server stored.
 
@@ -95,7 +99,7 @@ class Client:
         )
         return response.datasource
 
-    def list_sources(self, org_id: str) -> list[pb.Datasource]:
+    def list_sources(self, org_id: str) -> list[Datasource]:
         """Return the org's connected datasources."""
         response = self._gateway.unary(
             _SERVICE + "ListSources", pb.ListSourcesRequest(org_id=org_id), pb.ListSourcesResponse
