@@ -26,6 +26,7 @@ a secret reference — no read ever returns it.
 
 from __future__ import annotations
 
+import json
 import math
 import secrets
 import time
@@ -38,7 +39,6 @@ from uuid import UUID
 
 from google.protobuf import json_format, message_factory
 from google.protobuf.message import DecodeError, Message
-from google.protobuf.struct_pb2 import Struct
 from google.protobuf.timestamp_pb2 import Timestamp
 
 from saas_sdk._datasource_errors import map_error, unknown
@@ -221,10 +221,12 @@ class Client:
             raise ValueError(
                 "effect_id must be nonempty printable ASCII without whitespace"
             )
-        # Let protobuf validate the JSON value; schema validation is the host's.
-        input_struct = Struct()
+        # The Runnable envelope carries one JSON object as text. Keeping it
+        # out of Struct also preserves integers beyond the double range.
         try:
-            input_struct.update(dict(input))
+            if not isinstance(input, Mapping):
+                raise TypeError("input must be a JSON object")
+            input_json = json.dumps(dict(input), allow_nan=False, separators=(",", ":"))
         except (ValueError, TypeError) as error:
             raise InputError(str(error)) from error
         try:
@@ -235,7 +237,7 @@ class Client:
                     "org_id": org_id,
                     "source_id": source_id,
                     "operation": operation,
-                    "input": json_format.MessageToDict(input_struct),
+                    "input_json": input_json,
                     "effect_id": effect_id,
                 },
                 effect_id=effect_id,
@@ -256,9 +258,10 @@ class Client:
             raise unknown(effect_id, str(error)) from error
         try:
             receipt = _receipt(response["receipt"])
+            output = _json_object(response.get("output_json", ""))
         except (KeyError, TypeError, ValueError) as error:
             raise unknown(
-                effect_id, "host returned a missing or invalid receipt"
+                effect_id, "host returned a missing or invalid operation response"
             ) from error
         if receipt.effect_id != effect_id:
             raise unknown(
@@ -266,17 +269,26 @@ class Client:
             )
         if _is_unknown(receipt):
             raise OutcomeUnknown("host has not resolved the effect", receipt=receipt)
-        return Result(output=response.get("output", {}), receipt=receipt)
+        return Result(output=output, receipt=receipt)
 
     def lookup(
         self, org_id: str, source_id: str, effect_id: str
     ) -> Receipt | OutcomeUnknown:
-        """Read a receipt once. Unknown is a value, never raised here."""
-        response = _rpc(
-            self._gateway,
-            "LookupInvokeSourceOperation",
-            {"org_id": org_id, "source_id": source_id, "effect_id": effect_id},
-        )
+        """Read a receipt once. Unknown is a value, never raised here.
+
+        org_id/source_id retain the Go facade's signature; the wire selector is
+        only effect_id. The host resolves its binding under the gateway's tenant.
+        """
+        try:
+            response = _rpc(
+                self._gateway,
+                "LookupInvokeSourceOperation",
+                {"effect_id": effect_id},
+                effect_id=effect_id,
+                lookup=True,
+            )
+        except OutcomeUnknown as outcome:
+            return outcome
         receipt = _receipt(response["receipt"])
         if receipt.effect_id != effect_id:
             raise ValueError("host returned a receipt for a different effect ID")
@@ -363,6 +375,7 @@ def _rpc(
     fields: dict[str, Any],
     *,
     effect_id: str | None = None,
+    lookup: bool = False,
     headers: Mapping[str, str] | None = None,
     timeout: float | None = None,
 ) -> dict[str, Any]:
@@ -390,7 +403,7 @@ def _rpc(
                 timeout=timeout,
             )
     except HTTPError as error:
-        mapped = map_error(error, effect_id=effect_id)
+        mapped = map_error(error, effect_id=effect_id, lookup=lookup)
         if mapped is None:
             raise
         raise mapped from error
@@ -405,17 +418,11 @@ def _receipt(value: dict[str, Any]) -> Receipt:
         committed_at = timestamp.ToDatetime(tzinfo=timezone.utc)
     if not isinstance(value.get("status"), str):
         raise TypeError("host returned an unsupported receipt status")
-    status = next(
-        (
-            status
-            for status in ReceiptStatus
-            if value["status"] == status.value
-            or value["status"].endswith("_" + status.value)
-        ),
-        None,
-    )
-    if status is None:
+    statuses = {"committed": ReceiptStatus.COMMITTED, "unknown": ReceiptStatus.UNKNOWN}
+    if value["status"] not in statuses:
         raise ValueError("host returned an unsupported receipt status")
+    status = statuses[value["status"]]
+    _json_object(value.get("output_json", ""))
     return Receipt(
         effect_id=value["effect_id"],
         status=status,
@@ -426,6 +433,16 @@ def _receipt(value: dict[str, Any]) -> Receipt:
 
 def _is_unknown(receipt: Receipt) -> bool:
     return receipt.status is ReceiptStatus.UNKNOWN
+
+
+def _json_object(value: str) -> dict[str, Any]:
+    def reject_constant(constant: str) -> None:
+        raise ValueError(f"invalid JSON constant: {constant}")
+
+    decoded = json.loads(value, parse_constant=reject_constant)
+    if not isinstance(decoded, dict):
+        raise TypeError("host output must contain exactly one JSON object")
+    return decoded
 
 
 def _operation_fields(operation: Operation) -> dict[str, Any]:

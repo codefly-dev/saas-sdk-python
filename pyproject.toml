@@ -24,6 +24,3 @@ where = ["src"]
 [tool.setuptools.package-data]
 "saas_sdk" = ["py.typed"]
 "saas_sdk._gen" = ["*.pyi"]
-
-[tool.pytest.ini_options]
-markers = ["callable_contract: requires the generated callable-source RPCs from the host proto"]

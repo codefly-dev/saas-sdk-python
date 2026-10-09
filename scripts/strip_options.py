@@ -1,8 +1,8 @@
 """Strip custom options + shared-proto deps from a buf image so the generated
 message bindings embed only the named accounts proto(s) themselves (plus the
 well-known types they reference, which come from the protobuf runtime). Removes
-the buf.validate, saas.policy, and google.api imports that would otherwise force
-this SDK to vendor shared descriptors into the global pool.
+the buf.validate, saas.policy, google.api, and codefly.runnable imports that would
+otherwise force this SDK to vendor shared descriptors into the global pool.
 
 Usage: strip_options.py <in.binpb> <out.binpb> <proto>...
 
@@ -19,12 +19,11 @@ rather than naming a top-level `saas` package this SDK does not own.
 """
 
 import os
-
 import sys
 
 from google.protobuf import descriptor_pb2
 
-DROP_DEP_PREFIXES = ("buf/validate/", "saas/policy/", "google/api/")
+DROP_DEP_PREFIXES = ("buf/validate/", "saas/policy/", "google/api/", "codefly/runnable/")
 
 
 def clear_message(message):
@@ -60,7 +59,8 @@ def local_name(name):
     return "saas_sdk/_gen/" + os.path.basename(name)
 
 source = descriptor_pb2.FileDescriptorSet()
-source.ParseFromString(open(sys.argv[1], "rb").read())
+with open(sys.argv[1], "rb") as source_file:
+    source.ParseFromString(source_file.read())
 
 stripped = {}
 needed_wkt = set()
@@ -91,5 +91,6 @@ for file_proto in out.file:
     if file_proto.name in imported:
         file_proto.name = local_name(file_proto.name)
 
-open(sys.argv[2], "wb").write(out.SerializeToString())
+with open(sys.argv[2], "wb") as output_file:
+    output_file.write(out.SerializeToString())
 print("kept:", [f.name for f in out.file], file=sys.stderr)

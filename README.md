@@ -18,8 +18,9 @@ Packages:
   types are generated; the runtime owns the Connect transport, so there are no
   client/server stubs. The bindings embed **only** the accounts protos this SDK
   exposes (`datasource.proto`, `work_contexts.proto`) — the `buf.validate` /
-  `saas.policy` custom options, the `google.api` HTTP annotations, and their
-  shared descriptors are stripped during generation, so this SDK never registers
+  `saas.policy` custom options, the `google.api` HTTP and `codefly.runnable`
+  annotations and their shared descriptors are stripped during generation,
+  so this SDK never registers
   a shared proto into the global descriptor pool (which would collide with a
   sibling saas SDK). The `google.protobuf` well-known types stay runtime types.
 - **`saas_sdk.datasource`** — a gateway-bound facade over those types. It names
@@ -51,19 +52,21 @@ Packages:
 
 ## Calling a connected source (unreleased)
 
-The call half is being prepared for
-[module-saas-starter#1049](https://github.com/codefly-dev/module-saas-starter/issues/1049).
-The currently recorded proto does **not** have these four RPCs. The PR remains
-a draft until generation from the host PR head and verification against that
-contract are complete. Never release from the development ref: wait for the
-host tag and record its commit in `SOURCE.txt` first.
+The call half uses the proto from
+[module-saas-starter PR #1052](https://github.com/codefly-dev/module-saas-starter/pull/1052),
+head `f4ce896d954101b164c3b511cbeea555f17302f7`, recorded in `SOURCE.txt`.
+This is a development PR head, **not a released host tag**. Release waits for
+the accepted host tag: record its commit and regenerate before publishing.
 
 `datasource.invoke`, `lookup`, `declare_operations` and `list_operations` also
 exist on `datasource.new(gateway)`. The host holds the credential, admits the
 operation's route and schemas, resolves its endpoint, records the receipt, and
 audits the call as the person. An invocation supplies an operation name and
-input, never a provider URL or credential. The SDK converts input to protobuf
-`Struct` and uses the existing `Gateway.unary` seam for every call.
+input, never a provider URL or credential. The SDK encodes input into
+`input_json` and decodes `output_json`, each carrying exactly one JSON object.
+It rejects non-finite input numbers and preserves integer precision through
+the string payload; operation schemas still use the host's protobuf `Struct`
+fields. Every call uses the existing `Gateway.unary` seam.
 
 The following doctest uses a gateway fixture and a source already connected to
 `https://example.com`. Its declared operation is `GET /invoices`; declaring it
@@ -127,13 +130,13 @@ Host Connect statuses map to the Go sibling's names:
 | `ResourceExhausted` + `ErrorInfo{DATASOURCE_RATE_LIMITED}` | raises `RateLimited`; `.reset_at` is the host's UTC reset time, or receipt time plus `RetryInfo.retry_delay` |
 | `FailedPrecondition` | raises `ProviderRefused`; `.status` is the provider status from the details, when supplied |
 | `Unavailable`, `DeadlineExceeded`, `Canceled` during invocation, or a lost reply | raises `OutcomeUnknown`, retaining `.receipt` and `.effect_id` |
-| Lookup answers unknown | **returns** `OutcomeUnknown`; it is not raised |
+| Lookup answers unknown or `Unavailable` | **returns** `OutcomeUnknown`; it is not raised |
 
 Unknown is **not failure**: the mutation may have happened. Look up the same ID
 and handle the returned value explicitly. Never create a new effect ID to
 recover a lost reply. `lookup` returns `Receipt | OutcomeUnknown`; use
 `isinstance(value, datasource.OutcomeUnknown)` to distinguish them. Other
-lookup failures still raise normally, including an unavailable lookup endpoint.
+lookup failures still raise normally, including cancellation and deadline expiry.
 `Receipt.status` is `ReceiptStatus.COMMITTED`, `REFUSED` or `UNKNOWN`, matching
 the Go SDK. Absent commit time/provider status remain `None`. Missing error
 details likewise remain absent (`InputError.pointer` is empty).
@@ -142,6 +145,12 @@ The host is the disclosure guard. Typed errors preserve its message verbatim,
 including credential-looking strings; the SDK does not redact or repair host
 disclosures. Unknown Connect statuses and incoherent HTTP/code pairs propagate
 as the original gateway exception.
+
+The host's lookup wire request contains only `effect_id`; it resolves the stored
+binding under the gateway's verified tenant. The public `org_id` and `source_id`
+arguments remain for Go facade parity and are not additional lookup selectors.
+Receipt status strings (`committed`, `unknown`) map to `ReceiptStatus`, and the
+host's RFC3339 commit-time string becomes a timezone-aware `datetime`.
 
 ## Work Context
 
@@ -293,10 +302,9 @@ For callable-source development, fetch the PR linked from host issue #1049,
 check out its exact head commit in a separate host checkout, run the command
 above, and record the full 40-character SHA in `SOURCE.txt`. The generated
 method gate and Connect tests must then pass against that real contract; there
-are no replacement fixture protos. The `callable_contract` pytest marker only
-identifies these pending tests: normal CI still runs them and fails while the
-proto is absent. Before release, replace the development ref with the accepted
-host tag's commit, regenerate again, and match the host module version.
+are no replacement fixture protos. Before release, replace the development ref
+with the accepted host tag's commit, regenerate again, and match the host module
+version.
 
 ## Consuming
 

@@ -1,5 +1,8 @@
-src/saas_sdk/_gen generated from codefly-dev/module-saas-starter@c201081235a61da83500db4c30a8bbec7d391e1a
+src/saas_sdk/_gen generated from codefly-dev/module-saas-starter@f4ce896d954101b164c3b511cbeea555f17302f7
 (accounts public proto: module/services/accounts/proto)
+Development ref: draft PR https://github.com/codefly-dev/module-saas-starter/pull/1052 head.
+Release waits on the accepted host tag; replace this PR-head ref with the tag's
+commit and regenerate before publishing the SDK.
 services:
   saas.accounts.v1.DatasourceService (datasource.proto)
   saas.accounts.v1.WorkContextService (work_contexts.proto)

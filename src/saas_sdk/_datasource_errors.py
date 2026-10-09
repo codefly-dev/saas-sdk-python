@@ -48,7 +48,9 @@ def unknown(effect_id: str, message: str) -> OutcomeUnknown:
     return OutcomeUnknown(message, receipt=Receipt(effect_id, ReceiptStatus.UNKNOWN))
 
 
-def map_error(error: HTTPError, *, effect_id: str | None = None) -> Exception | None:
+def map_error(
+    error: HTTPError, *, effect_id: str | None = None, lookup: bool = False
+) -> Exception | None:
     """Return a typed error, or leave an unrecognized gateway failure alone.
 
     ``value`` is Connect's base64 protobuf Any payload; optional debug JSON is
@@ -138,10 +140,13 @@ def map_error(error: HTTPError, *, effect_id: str | None = None) -> Exception | 
             )
         except ValueError:
             status = None
+        if status is not None and not 100 <= status <= 599:
+            status = None
         return ProviderRefused(message, status=status)
     if (
         code in ("unavailable", "deadline_exceeded", "canceled")
         and effect_id is not None
+        and (not lookup or code == "unavailable")
     ):
         return unknown(effect_id, message)
     return None
