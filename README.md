@@ -153,7 +153,8 @@ Host Connect statuses map to the Go sibling's names:
 | `Unavailable`, `DeadlineExceeded`, `Canceled` during invocation, a lost reply, or a non-Connect HTTP error | raises `OutcomeUnknown`, retaining `.receipt` and `.effect_id` |
 | Lookup answers unknown, `Unavailable`, a non-Connect HTTP error, a lost/undecodable reply, or invalid receipt evidence | **returns** `OutcomeUnknown` with the original ID and receipt; it is not raised |
 | Committed receipt with invalid output | raises `DatasourceError` on invoke/lookup, retaining the COMMITTED `.receipt` and `.effect_id` |
-| Non-Connect HTTP 403 on declare/list | raises `NotPermitted`; other non-Connect HTTP codes retain the gateway error |
+| Unsupported response encoding on declare/list | raises `DatasourceError` before decoding or inferring a status |
+| Non-Connect HTTP 403 on declare/list with a supported encoding | raises `NotPermitted`; other non-Connect HTTP codes retain the gateway error |
 
 Every dispatched invocation failure retains `.effect_id` and `.receipt`, even
 when the gateway exception has no SDK mapping. Typed failures inherit
@@ -212,9 +213,14 @@ mappings above; other recognized Connect codes propagate as the original gateway
 exception. As in Connect-Go, a decoded JSON error's declared code takes precedence
 over its HTTP status; a missing/unrecognized string code uses the Connect-Go
 HTTP fallback. UTF-8 charset spelling and gzip encoding are case-insensitive;
-a UTF-8 BOM before a JSON error is accepted. Unsupported content types/charsets
+a UTF-8 BOM before a JSON error is accepted. No encoding, `identity` and `gzip`
+are supported. Unsupported encodings such as `br` are refused before decoding or
+inferring an HTTP status: declare/list raises `DatasourceError` with no receipt,
+while invoke/lookup retains `OutcomeUnknown` with the original effect ID.
+Unsupported content types/charsets
 or malformed envelopes are non-Connect errors. Declaration/list calls apply the
-HTTP fallback without inventing effect evidence: HTTP 403 becomes `NotPermitted`.
+HTTP fallback after the encoding check without inventing effect evidence:
+HTTP 403 becomes `NotPermitted`.
 Original HTTP error bodies remain readable through the exception
 or its `__cause__`. This diagnostic chain never authorizes a retry.
 
@@ -235,6 +241,9 @@ Declaration requires explicit `input` and `output` schema dictionaries. Omitted
 schemas default to `None` and raise `InputError` before dispatch, as do non-object
 schemas. An explicit `{}` is a supplied schema for host admission. Listing
 normalizes absent schemas to `{}`, so a listed operation can be re-declared.
+A listed operation with `EFFECT_UNSPECIFIED` (including an omitted effect) raises
+`InputError("host returned an unspecified effect")`, with an empty pointer and no
+effect receipt.
 
 ## Work Context
 

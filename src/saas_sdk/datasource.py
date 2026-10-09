@@ -511,6 +511,8 @@ def _operation_fields(operation: Operation) -> dict[str, Any]:
 
 
 def _operation(value: dict[str, Any]) -> Operation:
+    if value.get("effect", "EFFECT_UNSPECIFIED") == "EFFECT_UNSPECIFIED":
+        raise InputError("host returned an unspecified effect")
     effect = {
         "EFFECT_READ_ONLY": Effect.READ_ONLY,
         "EFFECT_MUTATION": Effect.MUTATION,

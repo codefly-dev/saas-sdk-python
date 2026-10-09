@@ -59,3 +59,8 @@
   accepted; absent schemas in list responses become `{}`.
 - Document the host timestamp profile and Python's existing protobuf parser
   limits, without changing timestamp parsing.
+- Reject unsupported response encodings before inferring host status:
+  declare/list raises `DatasourceError`; invoke/lookup retains `OutcomeUnknown`
+  and the original effect receipt. Keep the original error body readable.
+- Report an unspecified effect in a listed operation as `InputError`, including
+  omitted/default effects, matching the Go SDK.

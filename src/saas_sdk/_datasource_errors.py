@@ -20,6 +20,7 @@ from google.protobuf.timestamp_pb2 import Timestamp
 from google.rpc.error_details_pb2 import BadRequest, ErrorInfo, RetryInfo
 
 from saas_sdk._datasource_types import (
+    DatasourceError,
     EffectNotFound,
     EffectReused,
     InputError,
@@ -99,9 +100,10 @@ def _read_preserving_body(error: HTTPError) -> bytes:
 def map_error(
     error: HTTPError, *, effect_id: str | None = None, lookup: bool = False
 ) -> Exception | None:
-    """Map a Connect error; return the original if its code has no mapping.
+    """Map a gateway error; return the original if its code has no mapping.
 
     None means the HTTP response is not a recognized Connect error envelope.
+    Unsupported encodings are refused before decoding or HTTP status fallback.
     ``value`` is Connect's base64 protobuf Any payload; optional debug JSON is
     not authoritative. Unknown/invalid protobuf details never replace the host message;
     malformed JSON/base64 is a non-Connect response, matching Connect-Go.
@@ -112,7 +114,12 @@ def map_error(
         if encoding.lower() == "gzip":
             body = gzip.decompress(body)
         elif encoding.lower() not in ("", "identity"):
-            return None
+            # Connect rejects unknown encodings before decoding or inferring
+            # a status. Dispatch still leaves an effect's outcome unknown.
+            message = f"unsupported response encoding: {encoding}"
+            if effect_id is not None:
+                return unknown(effect_id, message)
+            return DatasourceError(message)
         payload = json.loads(body)
     except (ValueError, OSError, EOFError, zlib.error):
         return None

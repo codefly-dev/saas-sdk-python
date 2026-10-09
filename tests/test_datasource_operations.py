@@ -1129,7 +1129,28 @@ def test_invalid_local_operation_effect_is_typed(
     assert not state.received
 
 
-@pytest.mark.parametrize("effect", ["EFFECT_UNSPECIFIED", 42])
+@pytest.mark.parametrize("effect", [None, "EFFECT_UNSPECIFIED", 0])
+def test_unspecified_host_operation_effect_is_input_error(
+    connect: tuple[Gateway, State], effect: str | int | None
+) -> None:
+    gateway, state = connect
+    operation: dict[str, Any] = {
+        "name": "read_item",
+        "method": "GET",
+        "path": "/items",
+    }
+    if effect is not None:
+        operation["effect"] = effect
+    state.operations = [operation]
+    with pytest.raises(ds.InputError, match="^host returned an unspecified effect$") as caught:
+        ds.list_operations(gateway, "org", "source")
+    assert caught.value.pointer == ""
+    assert caught.value.effect_id is None
+    assert caught.value.receipt is None
+    assert len(state.received) == 1
+
+
+@pytest.mark.parametrize("effect", [42])
 def test_invalid_host_operation_effect_is_typed(
     connect: tuple[Gateway, State], effect: str | int
 ) -> None:
@@ -1689,6 +1710,40 @@ def test_management_nonconnect_403_is_not_permitted(
     assert caught.value.receipt is None
     assert isinstance(caught.value.__cause__, HTTPError)
     assert caught.value.__cause__.read() == body
+    assert len(state.received) == 1
+
+
+@pytest.mark.parametrize("method", ["invoke", "lookup", "declare", "list"])
+@pytest.mark.parametrize("encoding", ["br", "deflate"])
+@pytest.mark.parametrize("status", [403, 500])
+def test_unsupported_encoding_precedes_error_code_inference(
+    connect: tuple[Gateway, State], method: str, encoding: str, status: int
+) -> None:
+    gateway, state = connect
+    body = b'{"code":"permission_denied","message":"host denied"}'
+    state.raw_error = (status, body, "application/json")
+    state.error_content_encoding = encoding
+    if method == "invoke":
+        with pytest.raises(ds.OutcomeUnknown) as caught:
+            ds.invoke(gateway, "org", "source", "create_invoice", {})
+        error: ds.DatasourceError = caught.value
+    elif method == "lookup":
+        outcome = ds.lookup(gateway, "org", "source", "effect-1")
+        assert isinstance(outcome, ds.OutcomeUnknown)
+        error = outcome
+    else:
+        with pytest.raises(ds.DatasourceError) as caught_management:
+            _call_operation_surface(gateway, method)
+        error = caught_management.value
+        assert type(error) is ds.DatasourceError
+        assert error.effect_id is None
+        assert error.receipt is None
+    if method in ("invoke", "lookup"):
+        effect_id = state.received[0][1]["effect_id"]
+        assert error.effect_id == effect_id
+        assert error.receipt == ds.Receipt(effect_id, ds.ReceiptStatus.UNKNOWN)
+    assert isinstance(error.__cause__, HTTPError)
+    assert error.__cause__.read() == body
     assert len(state.received) == 1
 
 

@@ -87,7 +87,7 @@ class UnknownOperation(DatasourceError):
 
 
 class InputError(DatasourceError):
-    """The host refused the input at ``pointer`` (a JSON Pointer)."""
+    """Invalid input or an unspecified host effect; ``pointer`` may be empty."""
 
     def __init__(self, message: str, *, pointer: str = "") -> None:
         super().__init__(message)
