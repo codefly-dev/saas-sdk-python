@@ -220,9 +220,18 @@ def map_error(
             return EffectReused(message)
         if info.reason != "SOURCE_PROVIDER_REFUSED":
             return OperationRefused(message, reason=info.reason)
-        # provider_status error metadata is not an admitted contract. Never infer
-        # a provider status from it, even if an intermediary supplies the key.
-        return ProviderRefused(message)
+        # The host emits strconv.Itoa(status) for HTTP statuses in 100..599.
+        # Do not infer it from the diagnostic message or the Connect HTTP code.
+        value = info.metadata.get("provider_status", "")
+        status = (
+            int(value)
+            if len(value) == 3
+            and value.isascii()
+            and value.isdecimal()
+            and 100 <= int(value) <= 599
+            else None
+        )
+        return ProviderRefused(message, status=status)
     if lookup and code in ("deadline_exceeded", "canceled"):
         return error
     if (

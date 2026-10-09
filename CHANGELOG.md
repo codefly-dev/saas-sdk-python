@@ -11,9 +11,11 @@
 - Document call options, receipt recovery and the host's disclosure boundary
   in `README.md`, with an executable `example.com` provider example.
 - Regenerate from host PR #1052 head
-  `f4ce896d954101b164c3b511cbeea555f17302f7`. Calls carry JSON objects in
+  `86ee51fd8b4d66aad9da2509483e14d3c7534764`. Calls carry JSON objects in
   `input_json`/`output_json` strings; lookup selects only the effect ID, and
   receipts decode the host's text status and RFC3339 commit time.
+- Include the host's `PruneSourceOperationReceipts` and its lookup in generated
+  bindings only; runtime-scheduled retention has no caller facade.
 - Strip Runnable annotations in the generation pipeline alongside other
   custom options, keeping shared descriptors out of the SDK's generated tree.
 - The source ref is a development PR head; release still requires the host
@@ -32,5 +34,9 @@
   the exact scope and stub packages used for strict mypy.
 - Unify non-Connect HTTP 4xx/5xx (including 429 and 500) as `OutcomeUnknown`
   after dispatch, while preserving recognized Connect errors. Expired or
-  non-finite deadlines raise `InputError` before any host call. Pin that
-  `provider_status` error metadata never populates `ProviderRefused.status`.
+  non-finite deadlines raise `InputError` before any host call.
+- Consume the new host's explicit `provider_status` metadata for
+  `SOURCE_PROVIDER_REFUSED`, accepting only three ASCII digits in 100–599.
+  Missing or invalid metadata stays absent; never infer status from prose or
+  the outer HTTP response. Test the host's concrete 403 refusal and `/id`
+  `BadRequest.FieldViolation` shape, including its `SOURCE_INPUT_REFUSED` detail.

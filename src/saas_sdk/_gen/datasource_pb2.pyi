@@ -1,5 +1,5 @@
-from google.protobuf import struct_pb2 as _struct_pb2
 from google.protobuf import duration_pb2 as _duration_pb2
+from google.protobuf import struct_pb2 as _struct_pb2
 from google.protobuf import timestamp_pb2 as _timestamp_pb2
 from saas_sdk._gen import jobs_pb2 as _jobs_pb2
 from google.protobuf.internal import containers as _containers
@@ -1007,6 +1007,32 @@ class InvokeSourceOperationResponse(_message.Message):
     def __init__(self, output_json: _Optional[str] = ..., receipt: _Optional[_Union[SourceOperationReceipt, _Mapping]] = ...) -> None: ...
 
 class LookupInvokeSourceOperationRequest(_message.Message):
+    __slots__ = ("effect_id",)
+    EFFECT_ID_FIELD_NUMBER: _ClassVar[int]
+    effect_id: str
+    def __init__(self, effect_id: _Optional[str] = ...) -> None: ...
+
+class PruneSourceOperationReceiptsRequest(_message.Message):
+    __slots__ = ("org_id", "source_id", "effect_id")
+    ORG_ID_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_ID_FIELD_NUMBER: _ClassVar[int]
+    EFFECT_ID_FIELD_NUMBER: _ClassVar[int]
+    org_id: str
+    source_id: str
+    effect_id: str
+    def __init__(self, org_id: _Optional[str] = ..., source_id: _Optional[str] = ..., effect_id: _Optional[str] = ...) -> None: ...
+
+class PruneSourceOperationReceiptsResponse(_message.Message):
+    __slots__ = ("effect_id", "receipts", "status")
+    EFFECT_ID_FIELD_NUMBER: _ClassVar[int]
+    RECEIPTS_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    effect_id: str
+    receipts: int
+    status: str
+    def __init__(self, effect_id: _Optional[str] = ..., receipts: _Optional[int] = ..., status: _Optional[str] = ...) -> None: ...
+
+class LookupPruneSourceOperationReceiptsRequest(_message.Message):
     __slots__ = ("effect_id",)
     EFFECT_ID_FIELD_NUMBER: _ClassVar[int]
     effect_id: str

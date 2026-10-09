@@ -216,6 +216,22 @@ def test_generated_contract_has_all_callable_methods() -> None:
     )
 
 
+def test_retention_contract_is_generated_only() -> None:
+    methods = pb.DESCRIPTOR.services_by_name["DatasourceService"].methods_by_name
+    prune = methods["PruneSourceOperationReceipts"]
+    lookup = methods["LookupPruneSourceOperationReceipts"]
+    assert prune.input_type == pb.PruneSourceOperationReceiptsRequest.DESCRIPTOR
+    assert lookup.input_type == pb.LookupPruneSourceOperationReceiptsRequest.DESCRIPTOR
+    assert prune.output_type == lookup.output_type
+    assert prune.output_type == pb.PruneSourceOperationReceiptsResponse.DESCRIPTOR
+    assert set(prune.input_type.fields_by_name) == {"org_id", "source_id", "effect_id"}
+    assert set(lookup.input_type.fields_by_name) == {"effect_id"}
+    assert set(prune.output_type.fields_by_name) == {"effect_id", "receipts", "status"}
+    # These host Runnables are scheduled by the runtime, not the caller facade.
+    assert not any("prune" in name.lower() for name in dir(ds))
+    assert not any("prune" in name.lower() for name in dir(ds.Client))
+
+
 def test_invoke_mints_uuid7_forwards_authority_and_deadline(
     connect: tuple[Gateway, State],
 ) -> None:
@@ -451,20 +467,56 @@ def test_connect_status_maps_without_retry(
     assert len(state.received) == 1
 
 
-def test_bad_request_pointer_and_credential_looking_message_unchanged(
+@pytest.mark.parametrize("pointer", ["/id", "/", "/items/0/a~1b~0c"])
+def test_host_input_refusal_preserves_field_violation_pointer(
+    connect: tuple[Gateway, State],
+    pointer: str,
+) -> None:
+    gateway, state = connect
+    # sourceInputRefused at the recorded host ref emits both details, in order.
+    violation = BadRequest()
+    violation.field_violations.add(
+        field=pointer, description="input does not satisfy the declaration"
+    )
+    message = "source input refused at " + pointer
+    state.error = (
+        400,
+        _error(
+            "invalid_argument",
+            ErrorInfo(reason="SOURCE_INPUT_REFUSED", domain="saas.accounts.v1"),
+            violation,
+            message=message,
+        ),
+    )
+    with pytest.raises(ds.InputError) as caught:
+        ds.invoke(gateway, "org", "source", "read_item", {"id": False})
+    assert caught.value.pointer == pointer
+    assert str(caught.value) == message
+    assert caught.value.effect_id == state.received[0][1]["effect_id"]
+    assert len(state.received) == 1
+
+
+def test_credential_looking_message_is_not_parsed_for_a_pointer(
     connect: tuple[Gateway, State],
 ) -> None:
     gateway, state = connect
-    violation = BadRequest()
-    violation.field_violations.add(
-        field="/invoices/0/amount", description="must be positive"
-    )
     message = "provider said Bearer fixture-secret-1234567890"
-    state.error = (400, _error("invalid_argument", violation, message=message))
+    state.error = (400, _error("invalid_argument", message=message))
     with pytest.raises(ds.InputError) as caught:
-        ds._rpc(gateway, "ListSources", {"org_id": "org"})
-    assert caught.value.pointer == "/invoices/0/amount"
+        ds.invoke(gateway, "org", "source", "read_item", {})
+    assert caught.value.pointer == ""
     assert str(caught.value) == message
+
+
+def test_input_error_uses_first_field_violation(connect: tuple[Gateway, State]) -> None:
+    gateway, state = connect
+    violation = BadRequest()
+    violation.field_violations.add(field="/id", description="first violation")
+    violation.field_violations.add(field="/other", description="second violation")
+    state.error = (400, _error("invalid_argument", violation))
+    with pytest.raises(ds.InputError) as caught:
+        ds.invoke(gateway, "org", "source", "read_item", {})
+    assert caught.value.pointer == "/id"
 
 
 def test_retry_info_maps_to_absolute_reset(connect: tuple[Gateway, State]) -> None:
@@ -503,17 +555,33 @@ def test_host_reset_at_takes_precedence(connect: tuple[Gateway, State]) -> None:
     assert caught.value.reset_at == datetime(2026, 10, 9, 18, 5, tzinfo=timezone.utc)
 
 
-def test_pinned_host_provider_refusal_has_no_status(
+@pytest.mark.parametrize("provider_status", [401, 403, 404, 422])
+def test_host_provider_refusal_carries_explicit_provider_status(
     connect: tuple[Gateway, State],
+    provider_status: int,
 ) -> None:
     gateway, state = connect
+    # operationRefused(SOURCE_PROVIDER_REFUSED, status) from the pinned host.
     state.error = (
         400,
-        _error("failed_precondition", ErrorInfo(reason="SOURCE_PROVIDER_REFUSED")),
+        _error(
+            "failed_precondition",
+            ErrorInfo(
+                reason="SOURCE_PROVIDER_REFUSED",
+                domain="saas.accounts.v1",
+                metadata={"provider_status": str(provider_status)},
+            ),
+            message="source operation refused",
+        ),
     )
     with pytest.raises(ds.ProviderRefused) as caught:
-        ds._rpc(gateway, "ListSources", {"org_id": "org"})
-    assert caught.value.status is None
+        ds.invoke(gateway, "org", "source", "read_item", {"id": "a"})
+    assert caught.value.status == provider_status
+    assert str(caught.value) == "source operation refused"
+    assert caught.value.effect_id == state.received[0][1]["effect_id"]
+    assert isinstance(caught.value.__cause__, HTTPError)
+    assert caught.value.__cause__.code == 400
+    assert len(state.received) == 1
 
 
 @pytest.mark.parametrize(
@@ -1099,9 +1167,35 @@ def test_malformed_http_error_is_unknown(
     assert len(state.received) == 1
 
 
-@pytest.mark.parametrize("provider_status", ["401", "429", "500"])
-def test_provider_status_is_never_inferred_from_metadata(
-    connect: tuple[Gateway, State], provider_status: str
+@pytest.mark.parametrize(
+    ("provider_status", "expected"),
+    [
+        ("100", 100),
+        ("429", 429),
+        ("500", 500),
+        ("599", 599),
+        (None, None),
+        ("", None),
+        ("0", None),
+        ("099", None),
+        ("600", None),
+        ("0403", None),
+        ("+403", None),
+        ("-403", None),
+        (" 403", None),
+        ("403 ", None),
+        ("403\n", None),
+        ("4.03e2", None),
+        ("403.0", None),
+        ("٤٠٣", None),
+        ("４０３", None),
+        ("403 Forbidden", None),
+    ],
+)
+def test_provider_status_uses_only_canonical_explicit_metadata(
+    connect: tuple[Gateway, State],
+    provider_status: str | None,
+    expected: int | None,
 ) -> None:
     gateway, state = connect
     state.error = (
@@ -1110,13 +1204,41 @@ def test_provider_status_is_never_inferred_from_metadata(
             "failed_precondition",
             ErrorInfo(
                 reason="SOURCE_PROVIDER_REFUSED",
-                metadata={"provider_status": provider_status},
+                domain="saas.accounts.v1",
+                metadata={}
+                if provider_status is None
+                else {"provider_status": provider_status},
             ),
+            message="provider_status=403; provider returned HTTP 403 Forbidden",
         ),
     )
     with pytest.raises(ds.ProviderRefused) as caught:
         ds.invoke(gateway, "org", "source", "create_invoice", {})
-    assert caught.value.status is None
+    assert caught.value.status == expected
+    assert caught.value.effect_id == state.received[0][1]["effect_id"]
+    assert len(state.received) == 1
+
+
+def test_provider_status_metadata_cannot_turn_other_refusals_into_provider_refused(
+    connect: tuple[Gateway, State],
+) -> None:
+    gateway, state = connect
+    # The host also includes metadata on output refusal; its reason still wins.
+    state.error = (
+        400,
+        _error(
+            "failed_precondition",
+            ErrorInfo(
+                reason="SOURCE_OUTPUT_REFUSED",
+                domain="saas.accounts.v1",
+                metadata={"provider_status": "200"},
+            ),
+            message="source operation refused",
+        ),
+    )
+    with pytest.raises(ds.OperationRefused) as caught:
+        ds.invoke(gateway, "org", "source", "read_item", {"id": "a"})
+    assert caught.value.reason == "SOURCE_OUTPUT_REFUSED"
     assert caught.value.effect_id == state.received[0][1]["effect_id"]
     assert len(state.received) == 1
 

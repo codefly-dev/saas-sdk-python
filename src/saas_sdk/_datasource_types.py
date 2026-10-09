@@ -90,7 +90,11 @@ class RateLimited(DatasourceError):
 
 
 class ProviderRefused(DatasourceError):
-    """The provider refused. ``status`` is never inferred from error metadata."""
+    """The provider refused; ``status`` is explicit host metadata when present.
+
+    Missing or invalid metadata stays None. Neither prose nor the transport's
+    HTTP status is evidence of the provider's status.
+    """
 
     def __init__(self, message: str, *, status: int | None = None) -> None:
         super().__init__(message)

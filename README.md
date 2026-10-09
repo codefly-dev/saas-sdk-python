@@ -54,7 +54,7 @@ Packages:
 
 The call half uses the proto from
 [module-saas-starter PR #1052](https://github.com/codefly-dev/module-saas-starter/pull/1052),
-head `f4ce896d954101b164c3b511cbeea555f17302f7`, recorded in `SOURCE.txt`.
+head `86ee51fd8b4d66aad9da2509483e14d3c7534764`, recorded in `SOURCE.txt`.
 This is a development PR head, **not a released host tag**. Release waits for
 the accepted host tag: record its commit and regenerate before publishing.
 
@@ -67,6 +67,10 @@ input, never a provider URL or credential. The SDK encodes input into
 It rejects non-finite input numbers and preserves integer precision through
 the string payload; operation schemas still use the host's protobuf `Struct`
 fields. Every call uses the existing `Gateway.unary` seam.
+
+The generated bindings also include `PruneSourceOperationReceipts` and
+`LookupPruneSourceOperationReceipts`. These are host Runnables scheduled by the
+runtime for receipt retention; the caller facade exposes neither method.
 
 The following doctest uses a gateway fixture and a source already connected to
 `https://example.com`. Its declared operation is `GET /invoices`; declaring it
@@ -142,7 +146,7 @@ Host Connect statuses map to the Go sibling's names:
 | `InvalidArgument` | raises `InputError`; a supplied `BadRequest.FieldViolation` sets `.pointer` |
 | `ResourceExhausted` + `ErrorInfo{DATASOURCE_RATE_LIMITED}` | raises `RateLimited`; `.reset_at` is the host's UTC reset time, or receipt time plus `RetryInfo.retry_delay` |
 | `FailedPrecondition` + `SOURCE_OPERATION_OUTCOME_UNKNOWN` | raises `OutcomeUnknown` on invoke; **returns** it on lookup |
-| `FailedPrecondition` + `SOURCE_PROVIDER_REFUSED` | raises `ProviderRefused` |
+| `FailedPrecondition` + `SOURCE_PROVIDER_REFUSED` | raises `ProviderRefused`; `.status` is the explicit `ErrorInfo.metadata["provider_status"]` when valid |
 | `FailedPrecondition` + `SOURCE_EFFECT_REUSED` | raises `EffectReused` |
 | Other `FailedPrecondition` | raises `OperationRefused`, carrying `.reason` (empty when missing) |
 | `Unavailable`, `DeadlineExceeded`, `Canceled` during invocation, a lost reply, or a non-Connect HTTP error | raises `OutcomeUnknown`, retaining `.receipt` and `.effect_id` |
@@ -166,11 +170,14 @@ lookup failures still raise, including cancellation and deadline expiry.
 
 `ReceiptStatus` has `COMMITTED`, `UNKNOWN` and `NOT_ATTEMPTED`, matching Go.
 Only the first two are stored host receipt states. Absent commit time/provider
-status remain `None`. At the pinned host ref, `ProviderRefused.status` is always
-`None` and `InputError.pointer` is empty: the host emits neither provider-status
-error metadata nor `BadRequest.FieldViolation`. Provider status is never inferred
-from error metadata, even if a response supplies a `provider_status` key. The
-standard BadRequest decoder is tested as protocol support, not as a claim about this host's output.
+status remain `None`. The pinned host emits `SOURCE_PROVIDER_REFUSED` with
+explicit `provider_status` metadata when known. The SDK accepts exactly three
+ASCII decimal digits in 100–599; missing, malformed or out-of-range metadata
+leaves `ProviderRefused.status` as `None`. It never infers a provider status from
+the diagnostic message or the outer HTTP status. The host's `SOURCE_INPUT_REFUSED`
+error includes `BadRequest.FieldViolation.field` as a JSON pointer, exposed
+verbatim as `InputError.pointer` (including `/` and escaped tokens). The first
+field violation is used; absent details leave the pointer empty.
 
 The host is the disclosure guard. Typed errors preserve its message verbatim,
 including credential-looking strings; the SDK does not redact or repair host

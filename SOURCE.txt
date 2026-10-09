@@ -1,4 +1,4 @@
-src/saas_sdk/_gen generated from codefly-dev/module-saas-starter@f4ce896d954101b164c3b511cbeea555f17302f7
+src/saas_sdk/_gen generated from codefly-dev/module-saas-starter@86ee51fd8b4d66aad9da2509483e14d3c7534764
 (accounts public proto: module/services/accounts/proto)
 Development ref: draft PR https://github.com/codefly-dev/module-saas-starter/pull/1052 head.
 Release waits on the accepted host tag; replace this PR-head ref with the tag's
