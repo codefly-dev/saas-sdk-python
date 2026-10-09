@@ -21,7 +21,7 @@
   remains a prerequisite for production calls. The release version is unchanged.
 - Distinguish unknown mutation outcomes, provider refusals, effect reuse and
   other precondition reasons. Preserve effect IDs on every dispatched failure,
-  including non-Connect proxy 5xx, and keep raw error bodies readable.
+  including non-Connect HTTP errors, and keep raw error bodies readable.
 - Return `EffectNotFound` from lookup with `NOT_ATTEMPTED`; document same-ID
   recovery and the pinned host's ambiguous lookup NotFound response. Add
   committed `Receipt.output` and operation `description`/read-only `digest`,
@@ -30,3 +30,7 @@
   parsing failures as typed errors, and diagnose unsupported runtime gateways
   before dispatch. Document the timeout and host error-detail limitations and
   the exact scope and stub packages used for strict mypy.
+- Unify non-Connect HTTP 4xx/5xx (including 429 and 500) as `OutcomeUnknown`
+  after dispatch, while preserving recognized Connect errors. Expired or
+  non-finite deadlines raise `InputError` before any host call. Pin that
+  `provider_status` error metadata never populates `ProviderRefused.status`.

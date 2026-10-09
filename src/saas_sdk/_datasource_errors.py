@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import base64
 import binascii
+import gzip
 import json
+import zlib
 from datetime import datetime, timezone
 from io import BytesIO
 from urllib.error import HTTPError
@@ -36,15 +38,35 @@ _DETAILS: dict[str, type[Message]] = {
     "google.rpc.ErrorInfo": ErrorInfo,
     "google.rpc.RetryInfo": RetryInfo,
 }
-_HTTP_STATUS = {
-    "permission_denied": 403,
-    "not_found": 404,
-    "invalid_argument": 400,
-    "resource_exhausted": 429,
-    "failed_precondition": 400,
-    "unavailable": 503,
-    "deadline_exceeded": 504,
-    "canceled": 499,
+# Match Connect-Go's wire decoder: explicit codes take precedence over HTTP,
+# while missing/unrecognized string codes use its HTTP-to-code fallback.
+_CONNECT_CODES = {
+    "canceled",
+    "unknown",
+    "invalid_argument",
+    "deadline_exceeded",
+    "not_found",
+    "already_exists",
+    "permission_denied",
+    "resource_exhausted",
+    "failed_precondition",
+    "aborted",
+    "out_of_range",
+    "unimplemented",
+    "internal",
+    "unavailable",
+    "data_loss",
+    "unauthenticated",
+}
+_HTTP_TO_CODE = {
+    400: "internal",
+    401: "unauthenticated",
+    403: "permission_denied",
+    404: "unimplemented",
+    429: "unavailable",
+    502: "unavailable",
+    503: "unavailable",
+    504: "unavailable",
 }
 
 
@@ -76,45 +98,79 @@ def _read_preserving_body(error: HTTPError) -> bytes:
 def map_error(
     error: HTTPError, *, effect_id: str | None = None, lookup: bool = False
 ) -> Exception | None:
-    """Return a typed error, or leave an unrecognized gateway failure alone.
+    """Map a Connect error; return the original if its code has no mapping.
 
+    None means the HTTP response is not a recognized Connect error envelope.
     ``value`` is Connect's base64 protobuf Any payload; optional debug JSON is
-    not authoritative. Unknown/malformed details never replace the host message.
+    not authoritative. Unknown/invalid protobuf details never replace the host message;
+    malformed JSON/base64 is a non-Connect response, matching Connect-Go.
     """
     try:
-        payload = json.loads(_read_preserving_body(error))
-    except (ValueError, OSError):
+        body = _read_preserving_body(error)
+        encoding = error.headers.get("content-encoding", "") if error.headers else ""
+        if encoding.lower() == "gzip":
+            body = gzip.decompress(body)
+        elif encoding.lower() not in ("", "identity"):
+            return None
+        payload = json.loads(body)
+    except (ValueError, OSError, EOFError, zlib.error):
         return None
+    if not error.headers or error.headers.get_content_type() != "application/json":
+        return None
+    parameters = (error.headers.get_params() or [])[1:]
+    if any(
+        key.lower() != "charset"
+        or not isinstance(value, str)
+        or value.lower() != "utf-8"
+        for key, value in parameters
+    ):
+        return None
+    # encoding/json accepts null into the zero-value wire-error struct/string.
+    if payload is None:
+        payload = {}
     if not isinstance(payload, dict):
         return None
-    code = payload.get("code")
+    code = payload.get("code", "")
     message = payload.get("message", "")
+    code = "" if code is None else code
+    message = "" if message is None else message
     if not isinstance(code, str) or not isinstance(message, str):
         return None
-    if _HTTP_STATUS.get(code) != error.code:
-        return None
+    if code not in _CONNECT_CODES:
+        code = _HTTP_TO_CODE.get(error.code, "unknown")
 
     bad_request = BadRequest()
     info = ErrorInfo()
     retry = RetryInfo()
-    details = payload.get("details", [])
-    for detail in details if isinstance(details, list) else []:
+    details = payload.get("details")
+    if details is None:
+        details = []
+    if not isinstance(details, list):
+        return None
+    for detail in details:
+        if detail is None:
+            continue
         if not isinstance(detail, dict):
-            continue
-        name, value = detail.get("type"), detail.get("value")
+            return None
+        name, value = detail.get("type", ""), detail.get("value", "")
+        name = "" if name is None else name
+        value = "" if value is None else value
         if not isinstance(name, str) or not isinstance(value, str):
-            continue
+            return None
+        try:
+            # Invalid base64 makes the JSON error undecodable in Connect-Go.
+            wire_value = base64.b64decode(
+                value + "=" * (-len(value) % 4), validate=True
+            )
+        except (ValueError, binascii.Error):
+            return None
         detail_type = _DETAILS.get(name.removeprefix("type.googleapis.com/"))
         if detail_type is None:
             continue
         decoded = detail_type()
         try:
-            # connect-go writes RawStdEncoding (unpadded base64); accept the
-            # padded form too, as required by Connect's JSON error format.
-            decoded.ParseFromString(
-                base64.b64decode(value + "=" * (-len(value) % 4), validate=True)
-            )
-        except (ValueError, binascii.Error, DecodeError):
+            decoded.ParseFromString(wire_value)
+        except DecodeError:
             continue
         if isinstance(decoded, BadRequest):
             bad_request.MergeFrom(decoded)
@@ -164,8 +220,8 @@ def map_error(
             return EffectReused(message)
         if info.reason != "SOURCE_PROVIDER_REFUSED":
             return OperationRefused(message, reason=info.reason)
-        # f4ce896d9 supplies no provider_status metadata. Keep the public field
-        # absent until the host publishes that contract; never infer it.
+        # provider_status error metadata is not an admitted contract. Never infer
+        # a provider status from it, even if an intermediary supplies the key.
         return ProviderRefused(message)
     if lookup and code in ("deadline_exceeded", "canceled"):
         return error
@@ -175,4 +231,4 @@ def map_error(
         and (not lookup or code == "unavailable")
     ):
         return unknown(effect_id, message)
-    return None
+    return error

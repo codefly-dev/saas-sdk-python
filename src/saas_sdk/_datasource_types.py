@@ -90,7 +90,7 @@ class RateLimited(DatasourceError):
 
 
 class ProviderRefused(DatasourceError):
-    """The provider refused. ``status`` is absent at the currently pinned host."""
+    """The provider refused. ``status`` is never inferred from error metadata."""
 
     def __init__(self, message: str, *, status: int | None = None) -> None:
         super().__init__(message)

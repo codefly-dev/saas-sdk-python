@@ -215,11 +215,6 @@ class Client:
         survive a process crash. If this call loses its reply, OutcomeUnknown
         retains even a minted ID. Lookup that ID; never retry with a new one.
         """
-        timeout = None
-        if deadline is not None:
-            timeout = deadline - time.time()
-            if not math.isfinite(deadline) or timeout <= 0:
-                raise ValueError("deadline must be a finite future Unix timestamp")
         if effect_id is None:
             effect_id = _uuid7()
         _validate_effect_id(effect_id)
@@ -231,6 +226,12 @@ class Client:
             input_json = json.dumps(dict(input), allow_nan=False, separators=(",", ":"))
         except (ValueError, TypeError) as error:
             raise InputError(str(error)) from error
+        # Preparing the request consumes the deadline budget.
+        timeout = None
+        if deadline is not None:
+            timeout = deadline - time.time()
+            if not math.isfinite(deadline) or timeout <= 0:
+                raise InputError("deadline must be a finite future Unix timestamp")
         try:
             response = _rpc(
                 self._gateway,
@@ -253,8 +254,8 @@ class Client:
             DecodeError,
             URLError,
         ) as error:
-            # HTTPError is a URLError too: a known HTTP rejection is not a lost
-            # reply. _rpc already maps the recognized Connect statuses.
+            # HTTPError is a URLError too. _rpc already classifies HTTP replies;
+            # only an unmapped, recognized Connect error can remain here.
             if isinstance(error, HTTPError):
                 raise
             raise unknown(effect_id, str(error)) from error
@@ -428,7 +429,7 @@ def _rpc(
         except HTTPError as error:
             mapped = map_error(error, effect_id=effect_id, lookup=lookup)
             if mapped is None:
-                if effect_id is not None and 500 <= error.code <= 599:
+                if effect_id is not None:
                     raise unknown(effect_id, str(error)) from error
                 raise
             if mapped is error:

@@ -118,8 +118,9 @@ reads, re-mints, exchanges, or sets a Work Context header.
 
 `deadline` is an absolute Unix timestamp in **seconds**. The SDK passes the
 remaining duration to the gateway as `timeout`; an expired or non-finite deadline
-is refused before dispatch. The runtime must enforce that duration across the
-whole exchange to match Go's context deadline. A socket timeout alone, including
+raises `InputError` before dispatch, with zero host calls. The remaining duration
+is computed after encoding the input. The runtime must enforce that duration
+across the whole exchange to match Go's context deadline. A socket timeout alone, including
 the fixture gateway's urllib timeout, is not an end-to-end deadline.
 The gateway must support the `OperationGateway` protocol:
 `unary(procedure, request, response_type, *, headers=None, timeout=None)`, merge
@@ -144,8 +145,8 @@ Host Connect statuses map to the Go sibling's names:
 | `FailedPrecondition` + `SOURCE_PROVIDER_REFUSED` | raises `ProviderRefused` |
 | `FailedPrecondition` + `SOURCE_EFFECT_REUSED` | raises `EffectReused` |
 | Other `FailedPrecondition` | raises `OperationRefused`, carrying `.reason` (empty when missing) |
-| `Unavailable`, `DeadlineExceeded`, `Canceled` during invocation, a lost reply, or an unmapped HTTP 5xx | raises `OutcomeUnknown`, retaining `.receipt` and `.effect_id` |
-| Lookup answers unknown, `Unavailable`, or an unmapped HTTP 5xx | **returns** `OutcomeUnknown`; it is not raised |
+| `Unavailable`, `DeadlineExceeded`, `Canceled` during invocation, a lost reply, or a non-Connect HTTP error | raises `OutcomeUnknown`, retaining `.receipt` and `.effect_id` |
+| Lookup answers unknown, `Unavailable`, or a non-Connect HTTP error | **returns** `OutcomeUnknown`; it is not raised |
 
 Every dispatched invocation failure retains `.effect_id` and `.receipt`, even
 when the gateway exception has no SDK mapping. Typed failures inherit
@@ -167,14 +168,20 @@ lookup failures still raise, including cancellation and deadline expiry.
 Only the first two are stored host receipt states. Absent commit time/provider
 status remain `None`. At the pinned host ref, `ProviderRefused.status` is always
 `None` and `InputError.pointer` is empty: the host emits neither provider-status
-error metadata nor `BadRequest.FieldViolation`. The standard BadRequest decoder
-is tested as protocol support, not as a claim about this host's output.
+error metadata nor `BadRequest.FieldViolation`. Provider status is never inferred
+from error metadata, even if a response supplies a `provider_status` key. The
+standard BadRequest decoder is tested as protocol support, not as a claim about this host's output.
 
 The host is the disclosure guard. Typed errors preserve its message verbatim,
 including credential-looking strings; the SDK does not redact or repair host
-disclosures. Other unmapped errors propagate as the original gateway exception,
-with their bodies still readable. Unmapped HTTP 5xx responses conservatively
-leave the effect outcome unknown.
+disclosures. Non-Connect HTTP failures after dispatch, including every 4xx/5xx
+status, leave the effect outcome unknown: a proxy response cannot establish
+whether the host attempted the effect. Recognized Connect errors keep the typed
+mappings above; other recognized Connect codes propagate as the original gateway
+exception. As in Connect-Go, a decoded JSON error's declared code takes precedence
+over its HTTP status; a missing/unrecognized string code uses the Connect-Go
+HTTP fallback. Original HTTP error bodies remain readable through the exception
+or its `__cause__`. This diagnostic chain never authorizes a retry.
 
 The host's lookup wire request contains only `effect_id`; it resolves the stored
 binding under the gateway's verified tenant. The public `org_id` and `source_id`

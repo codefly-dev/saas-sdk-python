@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import doctest
+import gzip
 import json
 import threading
 import time
@@ -50,6 +51,7 @@ class State:
     )
     error: tuple[int, dict[str, Any]] | None = None
     raw_error: tuple[int, bytes, str] | None = None
+    error_content_encoding: str | None = None
     operations: list[dict[str, Any]] = field(default_factory=list)
     unknown: bool = False
     lose_reply: bool = False
@@ -164,6 +166,8 @@ def connect() -> Iterator[tuple[Gateway, State]]:
         def _respond(self, status: int, payload: bytes, content_type: str) -> None:
             self.send_response(status)
             self.send_header("content-type", content_type)
+            if state.error_content_encoding is not None:
+                self.send_header("content-encoding", state.error_content_encoding)
             self.send_header("content-length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
@@ -517,7 +521,6 @@ def test_pinned_host_provider_refusal_has_no_status(
     [
         (401, _error("unauthenticated")),
         (500, _error("internal")),
-        (500, _error("permission_denied")),
         (429, _error("resource_exhausted", ErrorInfo(reason="SOME_OTHER_QUOTA"))),
         (400, {"code": 42}),
     ],
@@ -534,13 +537,16 @@ def test_other_gateway_errors_propagate(
     assert len(state.received) == 1
 
 
-def test_malformed_details_do_not_destroy_typed_status_or_host_message(
+def test_invalid_protobuf_details_preserve_typed_status_and_host_message(
     connect: tuple[Gateway, State],
 ) -> None:
     gateway, state = connect
     payload = _error("invalid_argument")
     payload["details"] = [
-        {"type": "google.rpc.BadRequest", "value": "not base64!"},
+        {
+            "type": "google.rpc.BadRequest",
+            "value": base64.b64encode(b"\x80").decode("ascii"),
+        },
         None,
     ]
     state.error = (400, payload)
@@ -549,13 +555,18 @@ def test_malformed_details_do_not_destroy_typed_status_or_host_message(
     assert caught.value.pointer == ""
 
 
-@pytest.mark.parametrize("deadline", [0.0, -1.0, float("nan"), float("inf")])
+@pytest.mark.parametrize(
+    "deadline", [0.0, -1.0, float("nan"), float("inf"), -float("inf")]
+)
 def test_invalid_deadline_never_dispatches(
     connect: tuple[Gateway, State], deadline: float
 ) -> None:
     gateway, state = connect
-    with pytest.raises(ValueError, match="deadline"):
+    with pytest.raises(ds.InputError, match="deadline") as caught:
         ds.invoke(gateway, "org", "source", "list_invoices", {}, deadline=deadline)
+    assert caught.value.effect_id is None
+    assert caught.value.receipt is None
+    assert not gateway.options
     assert not state.received
 
 
@@ -925,17 +936,18 @@ def test_legacy_gateway_still_connects_but_cannot_invoke() -> None:
     assert gateway.calls == 1
 
 
-def test_raw_dispatch_error_keeps_minted_id_and_readable_body(
+def test_nonconnect_dispatch_error_keeps_minted_id_and_readable_cause(
     connect: tuple[Gateway, State],
 ) -> None:
     gateway, state = connect
     body = b"unauthenticated proxy response"
     state.raw_error = (401, body, "text/plain")
-    with pytest.raises(HTTPError) as caught:
+    with pytest.raises(ds.OutcomeUnknown) as caught:
         ds.invoke(gateway, "org", "source", "create_invoice", {})
     assert caught.value.effect_id == state.received[0][1]["effect_id"]
     assert caught.value.receipt.effect_id == caught.value.effect_id
-    assert caught.value.read() == body
+    assert isinstance(caught.value.__cause__, HTTPError)
+    assert caught.value.__cause__.read() == body
     assert len(state.received) == 1
 
 
@@ -997,4 +1009,188 @@ def test_lookup_unknown_errors_are_always_values(
     outcome = ds.lookup(gateway, "org", "source", "effect-1")
     assert isinstance(outcome, ds.OutcomeUnknown)
     assert outcome.effect_id == "effect-1"
+    assert len(state.received) == 1
+
+
+@pytest.mark.parametrize(
+    "status",
+    [400, 401, 403, 404, 408, 409, 418, 422, 429, 499, 500, 501, 502, 503, 504, 599],
+)
+@pytest.mark.parametrize("lookup", [False, True])
+def test_nonconnect_http_errors_leave_effect_unknown(
+    connect: tuple[Gateway, State], status: int, lookup: bool
+) -> None:
+    gateway, state = connect
+    state.raw_error = (status, b"proxy rejected the exchange", "text/plain")
+    if lookup:
+        outcome = ds.lookup(gateway, "org", "source", "effect-1")
+        assert isinstance(outcome, ds.OutcomeUnknown)
+        assert outcome.effect_id == "effect-1"
+    else:
+        with pytest.raises(ds.OutcomeUnknown) as caught:
+            ds.invoke(gateway, "org", "source", "create_invoice", {})
+        outcome = caught.value
+        assert UUID(outcome.effect_id).version == 7
+    assert outcome.effect_id == state.received[0][1]["effect_id"]
+    assert outcome.receipt.status is ds.ReceiptStatus.UNKNOWN
+    assert isinstance(outcome.__cause__, HTTPError)
+    assert outcome.__cause__.code == status
+    assert outcome.__cause__.read() == b"proxy rejected the exchange"
+    assert len(state.received) == 1
+
+
+@pytest.mark.parametrize(
+    ("status", "payload"),
+    [
+        (500, _error("internal")),
+        (500, _error("unknown")),
+        (500, _error("data_loss")),
+        (401, _error("unauthenticated")),
+        (409, _error("already_exists")),
+        (409, _error("aborted")),
+        (400, _error("out_of_range")),
+        (501, _error("unimplemented")),
+        (429, _error("resource_exhausted", ErrorInfo(reason="SOME_OTHER_QUOTA"))),
+    ],
+)
+@pytest.mark.parametrize("lookup", [False, True])
+def test_unmapped_connect_errors_keep_their_identity(
+    connect: tuple[Gateway, State], status: int, payload: dict[str, Any], lookup: bool
+) -> None:
+    gateway, state = connect
+    state.error = status, payload
+    with pytest.raises(HTTPError) as caught:
+        if lookup:
+            ds.lookup(gateway, "org", "source", "effect-1")
+        else:
+            ds.invoke(gateway, "org", "source", "create_invoice", {})
+    assert json.loads(caught.value.read()) == payload
+    if not lookup:
+        assert caught.value.effect_id == state.received[0][1]["effect_id"]
+    assert len(state.received) == 1
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "content_type"),
+    [
+        (429, b"not JSON", "application/json"),
+        (500, b"", "application/json"),
+        (401, b'{"code":"unauthenticated"}', "text/plain"),
+        (500, b'{"code":42}', "application/json"),
+        (400, b'{"code":"invalid_argument","details":42}', "application/json"),
+        (
+            400,
+            b'{"code":"invalid_argument","details":[{"type":"google.rpc.BadRequest","value":"not base64!"}]}',
+            "application/json",
+        ),
+        (403, b'{"code":"permission_denied"}', "application/json; charset=latin-1"),
+    ],
+)
+def test_malformed_http_error_is_unknown(
+    connect: tuple[Gateway, State], status: int, body: bytes, content_type: str
+) -> None:
+    gateway, state = connect
+    state.raw_error = status, body, content_type
+    with pytest.raises(ds.OutcomeUnknown) as caught:
+        ds.invoke(gateway, "org", "source", "create_invoice", {})
+    assert caught.value.effect_id == state.received[0][1]["effect_id"]
+    assert isinstance(caught.value.__cause__, HTTPError)
+    assert caught.value.__cause__.read() == body
+    assert len(state.received) == 1
+
+
+@pytest.mark.parametrize("provider_status", ["401", "429", "500"])
+def test_provider_status_is_never_inferred_from_metadata(
+    connect: tuple[Gateway, State], provider_status: str
+) -> None:
+    gateway, state = connect
+    state.error = (
+        400,
+        _error(
+            "failed_precondition",
+            ErrorInfo(
+                reason="SOURCE_PROVIDER_REFUSED",
+                metadata={"provider_status": provider_status},
+            ),
+        ),
+    )
+    with pytest.raises(ds.ProviderRefused) as caught:
+        ds.invoke(gateway, "org", "source", "create_invoice", {})
+    assert caught.value.status is None
+    assert caught.value.effect_id == state.received[0][1]["effect_id"]
+    assert len(state.received) == 1
+
+
+def test_deadline_expiring_during_encoding_never_dispatches(
+    connect: tuple[Gateway, State], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gateway, state = connect
+    encode = json.dumps
+    monkeypatch.setattr(time, "time", lambda: 10.0)
+
+    def expired_after_encoding(*args: Any, **kwargs: Any) -> str:
+        encoded = encode(*args, **kwargs)
+        monkeypatch.setattr(time, "time", lambda: 11.0)
+        return encoded
+
+    monkeypatch.setattr(json, "dumps", expired_after_encoding)
+    with pytest.raises(ds.InputError, match="deadline"):
+        ds.invoke(gateway, "org", "source", "create_invoice", {}, deadline=10.5)
+    assert not gateway.options
+    assert not state.received
+
+
+@pytest.mark.parametrize(
+    ("status", "payload", "expected"),
+    [
+        (500, {}, HTTPError),
+        (429, {}, ds.OutcomeUnknown),
+        (403, {}, ds.NotPermitted),
+        (500, {"code": "future_code"}, HTTPError),
+        (429, {"code": "future_code"}, ds.OutcomeUnknown),
+        (
+            500,
+            {"code": "permission_denied", "message": "declared wire code"},
+            ds.NotPermitted,
+        ),
+        (429, {"code": "internal", "message": "declared wire code"}, HTTPError),
+    ],
+)
+def test_connect_go_lenient_wire_codes(
+    connect: tuple[Gateway, State],
+    status: int,
+    payload: dict[str, Any],
+    expected: type[Exception],
+) -> None:
+    gateway, state = connect
+    state.error = status, payload
+    with pytest.raises(expected) as caught:
+        ds.invoke(gateway, "org", "source", "create_invoice", {})
+    assert isinstance(caught.value, (HTTPError, ds.DatasourceError))
+    assert caught.value.effect_id == state.received[0][1]["effect_id"]
+    assert len(state.received) == 1
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (
+            gzip.compress(b'{"code":"permission_denied","message":"host denied"}'),
+            ds.NotPermitted,
+        ),
+        (b"invalid gzip", ds.OutcomeUnknown),
+        (gzip.compress(b'{"code":"permission_denied"}')[:12], ds.OutcomeUnknown),
+    ],
+)
+def test_gzip_http_errors_preserve_wire_classification(
+    connect: tuple[Gateway, State], body: bytes, expected: type[ds.DatasourceError]
+) -> None:
+    gateway, state = connect
+    state.error_content_encoding = "gzip"
+    state.raw_error = (403, body, "application/json")
+    with pytest.raises(expected) as caught:
+        ds.invoke(gateway, "org", "source", "create_invoice", {})
+    assert caught.value.effect_id == state.received[0][1]["effect_id"]
+    assert isinstance(caught.value.__cause__, HTTPError)
+    assert caught.value.__cause__.read() == body
     assert len(state.received) == 1
