@@ -19,3 +19,14 @@
 - The source ref is a development PR head; release still requires the host
   tag. Runtime gateway support for Work Context, per-call headers and timeouts
   remains a prerequisite for production calls. The release version is unchanged.
+- Distinguish unknown mutation outcomes, provider refusals, effect reuse and
+  other precondition reasons. Preserve effect IDs on every dispatched failure,
+  including non-Connect proxy 5xx, and keep raw error bodies readable.
+- Return `EffectNotFound` from lookup with `NOT_ATTEMPTED`; document same-ID
+  recovery and the pinned host's ambiguous lookup NotFound response. Add
+  committed `Receipt.output` and operation `description`/read-only `digest`,
+  matching Go #30; remove the unused `REFUSED` receipt status.
+- Validate UTF-8 effect IDs against the host byte limit, report declaration
+  parsing failures as typed errors, and diagnose unsupported runtime gateways
+  before dispatch. Document the timeout and host error-detail limitations and
+  the exact scope and stub packages used for strict mypy.

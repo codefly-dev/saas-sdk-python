@@ -19,6 +19,7 @@ rather than naming a top-level `saas` package this SDK does not own.
 """
 
 import os
+
 import sys
 
 from google.protobuf import descriptor_pb2
@@ -59,8 +60,7 @@ def local_name(name):
     return "saas_sdk/_gen/" + os.path.basename(name)
 
 source = descriptor_pb2.FileDescriptorSet()
-with open(sys.argv[1], "rb") as source_file:
-    source.ParseFromString(source_file.read())
+source.ParseFromString(open(sys.argv[1], "rb").read())
 
 stripped = {}
 needed_wkt = set()
@@ -91,6 +91,5 @@ for file_proto in out.file:
     if file_proto.name in imported:
         file_proto.name = local_name(file_proto.name)
 
-with open(sys.argv[2], "wb") as output_file:
-    output_file.write(out.SerializeToString())
+open(sys.argv[2], "wb").write(out.SerializeToString())
 print("kept:", [f.name for f in out.file], file=sys.stderr)

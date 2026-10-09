@@ -101,56 +101,88 @@ True
 
 An omitted `effect_id` gets a UUIDv7, returned on `Result.receipt.effect_id`.
 For crash-safe mutation recovery, choose and persist the ID **before** invoking:
-the SDK stores nothing. Same ID and identical input means host replay; changing
-input under the same ID is refused by the host. Both calls reach the host: the
-SDK neither deduplicates, retries, nor caches receipts locally. It adds only
-`x-codefly-effect-id` through gateway call options, matching the request's ID.
-The gateway forwards its Work Context unchanged; the facade never reads,
-re-mints, exchanges, or sets a Work Context header.
+the SDK stores nothing. Explicit IDs are nonempty UTF-8 strings of at most 128
+bytes, without HTTP control characters or edge spaces (HTTP transports trim
+those). Interior spaces and Unicode are accepted.
+The gateway owns encoding header bytes, including UTF-8 IDs.
 
-`deadline` is an absolute Unix timestamp in **seconds**, matching the Go SDK's
-absolute deadline. The remaining duration is passed to the gateway as `timeout`;
-an expired or non-finite deadline is refused before dispatch.
+The host replays a **committed receipt** for the same ID and byte-identical
+`input_json`. An existing attempt without a receipt remains `OutcomeUnknown`;
+it is never dispatched again. Changed input under an existing ID is refused.
+Persist the input with the ID, including object key order: rebuilding a mapping
+with another insertion order changes the encoded JSON. Every invocation reaches
+the host; the SDK neither deduplicates, retries, nor caches receipts locally.
+It adds only `x-codefly-effect-id` through gateway call options, matching the
+request's ID. The gateway forwards its Work Context unchanged; the facade never
+reads, re-mints, exchanges, or sets a Work Context header.
+
+`deadline` is an absolute Unix timestamp in **seconds**. The SDK passes the
+remaining duration to the gateway as `timeout`; an expired or non-finite deadline
+is refused before dispatch. The runtime must enforce that duration across the
+whole exchange to match Go's context deadline. A socket timeout alone, including
+the fixture gateway's urllib timeout, is not an end-to-end deadline.
 The gateway must support the `OperationGateway` protocol:
 `unary(procedure, request, response_type, *, headers=None, timeout=None)`, merge
 per-call headers with its own authority, and perform one attempt. The published
 `solution-runtime-python` gateway currently has only the three-argument form,
 forwards the bearer only, and uses a fixed ten-second timeout. **That runtime
 needs Work Context forwarding and call options before it can use this surface.**
-Existing connection methods continue to use its three-argument seam. There is
-no SDK transport or fallback that bypasses the runtime.
+Invoke detects the missing call options before dispatch and raises a `TypeError`
+that names `OperationGateway` and the required runtime upgrade. Existing
+connection methods continue to use the three-argument seam.
 
 Host Connect statuses map to the Go sibling's names:
 
 | Host response | Python value |
 |---|---|
 | `PermissionDenied` | raises `NotPermitted` |
-| `NotFound` | raises `UnknownOperation` |
-| `InvalidArgument` + `BadRequest.FieldViolation` | raises `InputError`; `.pointer` is the first violation's JSON Pointer |
+| `NotFound` during invoke | raises `UnknownOperation` |
+| `NotFound` during lookup | **returns** `EffectNotFound`, retaining the ID and a `NOT_ATTEMPTED` receipt |
+| `InvalidArgument` | raises `InputError`; a supplied `BadRequest.FieldViolation` sets `.pointer` |
 | `ResourceExhausted` + `ErrorInfo{DATASOURCE_RATE_LIMITED}` | raises `RateLimited`; `.reset_at` is the host's UTC reset time, or receipt time plus `RetryInfo.retry_delay` |
-| `FailedPrecondition` | raises `ProviderRefused`; `.status` is the provider status from the details, when supplied |
-| `Unavailable`, `DeadlineExceeded`, `Canceled` during invocation, or a lost reply | raises `OutcomeUnknown`, retaining `.receipt` and `.effect_id` |
-| Lookup answers unknown or `Unavailable` | **returns** `OutcomeUnknown`; it is not raised |
+| `FailedPrecondition` + `SOURCE_OPERATION_OUTCOME_UNKNOWN` | raises `OutcomeUnknown` on invoke; **returns** it on lookup |
+| `FailedPrecondition` + `SOURCE_PROVIDER_REFUSED` | raises `ProviderRefused` |
+| `FailedPrecondition` + `SOURCE_EFFECT_REUSED` | raises `EffectReused` |
+| Other `FailedPrecondition` | raises `OperationRefused`, carrying `.reason` (empty when missing) |
+| `Unavailable`, `DeadlineExceeded`, `Canceled` during invocation, a lost reply, or an unmapped HTTP 5xx | raises `OutcomeUnknown`, retaining `.receipt` and `.effect_id` |
+| Lookup answers unknown, `Unavailable`, or an unmapped HTTP 5xx | **returns** `OutcomeUnknown`; it is not raised |
+
+Every dispatched invocation failure retains `.effect_id` and `.receipt`, even
+when the gateway exception has no SDK mapping. Typed failures inherit
+`DatasourceError`; input and gateway validation before dispatch do not claim a
+host attempt. A refusal of this request does not establish the outcome of an
+earlier attempt under that ID.
 
 Unknown is **not failure**: the mutation may have happened. Look up the same ID
-and handle the returned value explicitly. Never create a new effect ID to
-recover a lost reply. `lookup` returns `Receipt | OutcomeUnknown`; use
-`isinstance(value, datasource.OutcomeUnknown)` to distinguish them. Other
-lookup failures still raise normally, including cancellation and deadline expiry.
-`Receipt.status` is `ReceiptStatus.COMMITTED`, `REFUSED` or `UNKNOWN`, matching
-the Go SDK. Absent commit time/provider status remain `None`. Missing error
-details likewise remain absent (`InputError.pointer` is empty).
+and handle `Receipt | OutcomeUnknown | EffectNotFound` explicitly. A committed
+receipt carries `.output`, so recovery need not invoke again to read the result.
+An `EffectNotFound` permits an explicit **same-ID** invocation with the original
+input; the SDK never performs it automatically. Never create a new ID to recover
+a lost reply. At this host ref, an absent attempt and a removed declaration both
+produce lookup `NotFound` without a distinguishing reason. `NOT_ATTEMPTED`
+labels that lookup miss; it is not proof that the provider never acted. Other
+lookup failures still raise, including cancellation and deadline expiry.
+
+`ReceiptStatus` has `COMMITTED`, `UNKNOWN` and `NOT_ATTEMPTED`, matching Go.
+Only the first two are stored host receipt states. Absent commit time/provider
+status remain `None`. At the pinned host ref, `ProviderRefused.status` is always
+`None` and `InputError.pointer` is empty: the host emits neither provider-status
+error metadata nor `BadRequest.FieldViolation`. The standard BadRequest decoder
+is tested as protocol support, not as a claim about this host's output.
 
 The host is the disclosure guard. Typed errors preserve its message verbatim,
 including credential-looking strings; the SDK does not redact or repair host
-disclosures. Unknown Connect statuses and incoherent HTTP/code pairs propagate
-as the original gateway exception.
+disclosures. Other unmapped errors propagate as the original gateway exception,
+with their bodies still readable. Unmapped HTTP 5xx responses conservatively
+leave the effect outcome unknown.
 
 The host's lookup wire request contains only `effect_id`; it resolves the stored
 binding under the gateway's verified tenant. The public `org_id` and `source_id`
 arguments remain for Go facade parity and are not additional lookup selectors.
 Receipt status strings (`committed`, `unknown`) map to `ReceiptStatus`, and the
 host's RFC3339 commit-time string becomes a timezone-aware `datetime`.
+`Operation.description` round-trips with the declaration; `Operation.digest`
+is read from the host's admitted declaration and ignored on declaration input.
 
 ## Work Context
 
@@ -328,3 +360,21 @@ Naming `saas_sdk._gen` in consumer code pins this SDK's internal layout into
 yours: regenerating against a newer contract, or swapping the committed tree for
 a served dependency, would become a breaking change for you rather than a change
 here. `tests/test_api_boundary.py` fails if a public signature reintroduces it.
+
+## Development checks
+
+CI runs pytest on Python 3.10 and 3.12 with `[test,revision-connect,revision-grpc]`.
+There is no committed Ruff or mypy CI configuration. For the callable-source
+facade, the review checks were run with Ruff 0.16.10 and mypy 2.4.0, plus
+`types-protobuf==7.35.1.20260906` and
+`googleapis-common-protos-stubs==2.3.1` (development-only packages):
+
+```bash
+ruff check src/saas_sdk/datasource.py src/saas_sdk/_datasource_types.py src/saas_sdk/_datasource_errors.py tests/test_datasource_operations.py
+mypy --no-incremental --strict --follow-imports=silent src/saas_sdk/datasource.py src/saas_sdk/_datasource_types.py src/saas_sdk/_datasource_errors.py tests/test_datasource_operations.py
+```
+
+This is a strict check of those four files, not the entire repository. The
+`google.rpc` imports need the named stubs: `googleapis-common-protos` alone lacks
+`py.typed` and yields `import-untyped`. The generation script retains its existing
+style outside the Runnable dependency change; repository-wide lint is not clean.

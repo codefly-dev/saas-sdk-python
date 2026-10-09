@@ -15,9 +15,11 @@ import urllib.request
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from email.message import Message as Headers
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 from urllib.error import HTTPError
 from uuid import UUID
 
@@ -28,6 +30,7 @@ from google.protobuf.message import Message
 from google.rpc.error_details_pb2 import BadRequest, ErrorInfo, RetryInfo
 
 from saas_sdk import datasource as ds
+from saas_sdk._datasource_errors import map_error
 from saas_sdk._gen import datasource_pb2 as pb
 
 _M = TypeVar("_M", bound=Message)
@@ -46,6 +49,7 @@ class State:
         default_factory=list
     )
     error: tuple[int, dict[str, Any]] | None = None
+    raw_error: tuple[int, bytes, str] | None = None
     operations: list[dict[str, Any]] = field(default_factory=list)
     unknown: bool = False
     lose_reply: bool = False
@@ -78,7 +82,10 @@ class Gateway:
             "authorization": "Bearer fixture-person",
             "x-codefly-work-context": self.work_context,
         }
-        http_headers.update(headers or {})
+        # Go sends UTF-8 header bytes. urllib uses a Latin-1 str interface.
+        http_headers.update(
+            {k: v.encode("utf-8").decode("latin-1") for k, v in (headers or {}).items()}
+        )
         http_request = urllib.request.Request(
             self.base_url + procedure,
             data=request.SerializeToString(),
@@ -121,6 +128,9 @@ def connect() -> Iterator[tuple[Gateway, State]]:
             )
             if state.lose_reply:
                 self.close_connection = True
+                return
+            if state.raw_error is not None:
+                self._respond(*state.raw_error)
                 return
             if state.error is not None:
                 status, error = state.error
@@ -271,9 +281,13 @@ def test_different_input_same_id_reaches_host_for_refusal(
     )
     state.error = (
         400,
-        _error("failed_precondition", message="effect ID input mismatch"),
+        _error(
+            "failed_precondition",
+            ErrorInfo(reason="SOURCE_EFFECT_REUSED"),
+            message="source operation refused",
+        ),
     )
-    with pytest.raises(ds.ProviderRefused, match="effect ID input mismatch"):
+    with pytest.raises(ds.EffectReused, match="source operation refused") as caught:
         ds.invoke(
             gateway,
             "org",
@@ -282,6 +296,7 @@ def test_different_input_same_id_reaches_host_for_refusal(
             {"amount": 2},
             effect_id="effect-1",
         )
+    assert caught.value.effect_id == "effect-1"
     assert len(state.received) == 2
     assert state.received[0][1]["input_json"] != state.received[1][1]["input_json"]
 
@@ -353,9 +368,18 @@ def test_invoke_typed_errors(
     connect: tuple[Gateway, State], code: str, status: int, expected: type[Exception]
 ) -> None:
     gateway, state = connect
-    state.error = (status, _error(code, ErrorInfo(reason="DATASOURCE_RATE_LIMITED")))
-    with pytest.raises(expected, match="host message"):
-        ds.invoke(gateway, "org", "source", "create_invoice", {}, effect_id="effect-1")
+    reason = (
+        "SOURCE_PROVIDER_REFUSED"
+        if code == "failed_precondition"
+        else "DATASOURCE_RATE_LIMITED"
+    )
+    state.error = (status, _error(code, ErrorInfo(reason=reason)))
+    with pytest.raises(expected, match="host message") as caught:
+        ds.invoke(gateway, "org", "source", "create_invoice", {})
+    assert isinstance(caught.value, ds.DatasourceError)
+    assert caught.value.effect_id == state.received[0][1]["effect_id"]
+    assert caught.value.receipt is not None
+    assert caught.value.receipt.effect_id == caught.value.effect_id
     assert len(state.received) == 1
 
 
@@ -406,7 +430,7 @@ def test_declarations_round_trip(connect: tuple[Gateway, State]) -> None:
         ("permission_denied", 403, ds.NotPermitted),
         ("not_found", 404, ds.UnknownOperation),
         ("invalid_argument", 400, ds.InputError),
-        ("failed_precondition", 400, ds.ProviderRefused),
+        ("failed_precondition", 400, ds.OperationRefused),
         ("unavailable", 503, ds.OutcomeUnknown),
         ("deadline_exceeded", 504, ds.OutcomeUnknown),
         ("canceled", 499, ds.OutcomeUnknown),
@@ -475,17 +499,17 @@ def test_host_reset_at_takes_precedence(connect: tuple[Gateway, State]) -> None:
     assert caught.value.reset_at == datetime(2026, 10, 9, 18, 5, tzinfo=timezone.utc)
 
 
-def test_provider_status_comes_from_details_not_connect_http_status(
+def test_pinned_host_provider_refusal_has_no_status(
     connect: tuple[Gateway, State],
 ) -> None:
     gateway, state = connect
     state.error = (
         400,
-        _error("failed_precondition", ErrorInfo(metadata={"provider_status": "401"})),
+        _error("failed_precondition", ErrorInfo(reason="SOURCE_PROVIDER_REFUSED")),
     )
     with pytest.raises(ds.ProviderRefused) as caught:
         ds._rpc(gateway, "ListSources", {"org_id": "org"})
-    assert caught.value.status == 401
+    assert caught.value.status is None
 
 
 @pytest.mark.parametrize(
@@ -506,6 +530,7 @@ def test_other_gateway_errors_propagate(
     with pytest.raises(HTTPError) as caught:
         ds._rpc(gateway, "ListSources", {"org_id": "org"})
     assert caught.value.code == status
+    assert json.loads(caught.value.read()) == payload
     assert len(state.received) == 1
 
 
@@ -534,13 +559,29 @@ def test_invalid_deadline_never_dispatches(
     assert not state.received
 
 
-@pytest.mark.parametrize("effect_id", ["", "bad\r\nheader", "bad id", "é"])
+@pytest.mark.parametrize(
+    "effect_id",
+    [
+        "",
+        "bad\r\nheader",
+        "bad\x00id",
+        "bad\tid",
+        "bad\x7fid",
+        " id",
+        "id ",
+        " ",
+        "a" * 129,
+        "é" * 65,
+        "\ud800",
+    ],
+)
 def test_invalid_effect_id_never_dispatches(
     connect: tuple[Gateway, State], effect_id: str
 ) -> None:
     gateway, state = connect
-    with pytest.raises(ValueError, match="effect_id"):
+    with pytest.raises(ds.InputError, match="effect_id") as caught:
         ds.invoke(gateway, "org", "source", "list_invoices", {}, effect_id=effect_id)
+    assert caught.value.effect_id is None
     assert not state.received
 
 
@@ -554,8 +595,8 @@ def test_non_json_input_is_an_input_error(connect: tuple[Gateway, State]) -> Non
 def test_receipt_enum_names_match_go() -> None:
     assert [status.value for status in ds.ReceiptStatus] == [
         "COMMITTED",
-        "REFUSED",
         "UNKNOWN",
+        "NOT_ATTEMPTED",
     ]
     assert [effect.value for effect in ds.Effect] == ["READ_ONLY", "MUTATION"]
 
@@ -613,20 +654,6 @@ def test_lookup_other_transport_failures_still_raise(
     assert len(state.received) == 1
 
 
-@pytest.mark.parametrize("status", ["0", "99", "600", "-1", "not a status"])
-def test_invalid_provider_status_stays_absent(
-    connect: tuple[Gateway, State], status: str
-) -> None:
-    gateway, state = connect
-    state.error = (
-        400,
-        _error("failed_precondition", ErrorInfo(metadata={"provider_status": status})),
-    )
-    with pytest.raises(ds.ProviderRefused) as caught:
-        ds.invoke(gateway, "org", "source", "create_invoice", {})
-    assert caught.value.status is None
-
-
 def test_generated_payloads_are_strings_and_lookup_selects_effect() -> None:
     assert (
         pb.InvokeSourceOperationRequest.DESCRIPTOR.fields_by_name["input_json"].type
@@ -661,6 +688,74 @@ def test_unsupported_receipt_status_keeps_effect_unknown(
     assert len(state.received) == 1
 
 
+def test_host_lost_mutation_reason_is_unknown_with_minted_id(
+    connect: tuple[Gateway, State],
+) -> None:
+    gateway, state = connect
+    message = (
+        "source operation outcome is unknown; this effect will not be dispatched again"
+    )
+    state.error = (
+        400,
+        _error(
+            "failed_precondition",
+            ErrorInfo(reason="SOURCE_OPERATION_OUTCOME_UNKNOWN"),
+            message=message,
+        ),
+    )
+    with pytest.raises(ds.OutcomeUnknown) as caught:
+        ds.invoke(gateway, "org", "source", "create_invoice", {})
+    assert str(caught.value) == message
+    assert caught.value.effect_id == state.received[0][1]["effect_id"]
+    assert UUID(caught.value.effect_id).version == 7
+    assert not isinstance(caught.value, ds.ProviderRefused)
+    assert len(state.received) == 1
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "SOURCE_DECLARATION_CHANGED",
+        "SOURCE_REAUTH_REQUIRED",
+        "SOURCE_EFFECT_BINDING_CHANGED",
+        "SOURCE_OUTPUT_REFUSED",
+        "",
+    ],
+)
+def test_nonprovider_preconditions_retain_host_reason(
+    connect: tuple[Gateway, State], reason: str
+) -> None:
+    gateway, state = connect
+    state.error = (
+        400,
+        _error(
+            "failed_precondition",
+            ErrorInfo(reason=reason),
+            message="source operation refused",
+        ),
+    )
+    with pytest.raises(ds.OperationRefused) as caught:
+        ds.invoke(gateway, "org", "source", "create_invoice", {})
+    assert caught.value.reason == reason
+    assert not isinstance(caught.value, ds.ProviderRefused)
+
+
+@pytest.mark.parametrize("status", [500, 502, 503, 504])
+@pytest.mark.parametrize(
+    "body", [b"upstream request timeout", b"<html>upstream unavailable</html>"]
+)
+def test_proxy_5xx_retains_effect_id_without_retry(
+    connect: tuple[Gateway, State], status: int, body: bytes
+) -> None:
+    gateway, state = connect
+    state.raw_error = status, body, "text/plain"
+    with pytest.raises(ds.OutcomeUnknown) as caught:
+        ds.invoke(gateway, "org", "source", "create_invoice", {})
+    assert caught.value.effect_id == state.received[0][1]["effect_id"]
+    assert UUID(caught.value.effect_id).version == 7
+    assert len(state.received) == 1
+
+
 def test_readme_example(connect: tuple[Gateway, State]) -> None:
     gateway, _ = connect
     text = (Path(__file__).parents[1] / "README.md").read_text()
@@ -671,3 +766,235 @@ def test_readme_example(connect: tuple[Gateway, State]) -> None:
     runner = doctest.DocTestRunner()
     result = runner.run(test)
     assert result.failed == 0
+
+
+@pytest.mark.parametrize(
+    "effect_id", ["bad id", "facture-é", "发票-1", "a" * 128, "é" * 64]
+)
+def test_effect_id_accepts_host_utf8_profile(
+    connect: tuple[Gateway, State], effect_id: str
+) -> None:
+    gateway, state = connect
+    result = ds.invoke(
+        gateway, "org", "source", "create_invoice", {}, effect_id=effect_id
+    )
+    assert result.receipt.effect_id == effect_id
+    assert state.received[0][1]["effect_id"] == effect_id
+    assert (
+        state.received[0][2]["x-codefly-effect-id"].encode("latin-1").decode("utf-8")
+        == effect_id
+    )
+
+
+def test_absent_effect_can_be_explicitly_reinvoked_with_same_id(
+    connect: tuple[Gateway, State],
+) -> None:
+    gateway, state = connect
+    state.error = (503, _error("unavailable"))
+    with pytest.raises(ds.OutcomeUnknown) as caught:
+        ds.invoke(gateway, "org", "source", "create_invoice", {"amount": 2})
+    effect_id = caught.value.effect_id
+    state.error = (404, _error("not_found", message="source effect not found"))
+    outcome = ds.lookup(gateway, "org", "source", effect_id)
+    assert isinstance(outcome, ds.EffectNotFound)
+    assert outcome.effect_id == effect_id
+    assert outcome.receipt.status is ds.ReceiptStatus.NOT_ATTEMPTED
+    assert outcome.receipt.output is None
+    assert str(outcome) == "source effect not found"
+    assert len(state.received) == 2
+    state.error = None
+    result = ds.invoke(
+        gateway,
+        "org",
+        "source",
+        "create_invoice",
+        {"amount": 2},
+        effect_id=outcome.effect_id,
+    )
+    assert result.receipt.effect_id == effect_id
+    assert len(state.received) == 3
+    assert state.received[0][1] == state.received[2][1]
+
+
+def test_lookup_retains_committed_output(connect: tuple[Gateway, State]) -> None:
+    gateway, state = connect
+    result = ds.invoke(gateway, "org", "source", "create_invoice", {})
+    receipt = ds.lookup(gateway, "org", "source", result.receipt.effect_id)
+    assert isinstance(receipt, ds.Receipt)
+    assert receipt.output == result.output
+    assert len(state.received) == 2
+
+
+def test_operation_description_and_read_only_digest(
+    connect: tuple[Gateway, State],
+) -> None:
+    gateway, state = connect
+    operation = ds.Operation(
+        "list_invoices",
+        "GET",
+        "/invoices",
+        ds.Effect.READ_ONLY,
+        description="List invoices",
+        digest="caller-digest-ignored",
+    )
+    ds.declare_operations(gateway, "org", "source", [operation])
+    assert state.operations[0]["description"] == operation.description
+    assert "digest" not in state.operations[0]
+    state.operations[0]["digest"] = "host-digest"
+    [listed] = ds.list_operations(gateway, "org", "source")
+    assert listed.description == operation.description
+    assert listed.digest == "host-digest"
+
+
+@pytest.mark.parametrize("max_output_bytes", [-1, 2**32])
+def test_out_of_range_declaration_is_typed_before_dispatch(
+    connect: tuple[Gateway, State], max_output_bytes: int
+) -> None:
+    gateway, state = connect
+    operation = ds.Operation(
+        "list_invoices",
+        "GET",
+        "/invoices",
+        ds.Effect.READ_ONLY,
+        max_output_bytes=max_output_bytes,
+    )
+    with pytest.raises(ds.InputError):
+        ds.declare_operations(gateway, "org", "source", [operation])
+    assert not state.received
+
+
+def test_invalid_local_operation_effect_is_typed(
+    connect: tuple[Gateway, State],
+) -> None:
+    gateway, state = connect
+    operation = ds.Operation(
+        "list_invoices", "GET", "/invoices", cast(ds.Effect, "INVALID")
+    )
+    with pytest.raises(ds.InputError, match="effect"):
+        ds.declare_operations(gateway, "org", "source", [operation])
+    assert not state.received
+
+
+@pytest.mark.parametrize("effect", ["EFFECT_UNSPECIFIED", 42])
+def test_invalid_host_operation_effect_is_typed(
+    connect: tuple[Gateway, State], effect: str | int
+) -> None:
+    gateway, state = connect
+    state.operations = [
+        {
+            "name": "list_invoices",
+            "method": "GET",
+            "path": "/invoices",
+            "effect": effect,
+        }
+    ]
+    with pytest.raises(ds.DatasourceError, match="unsupported operation effect"):
+        ds.list_operations(gateway, "org", "source")
+
+
+@pytest.mark.parametrize(
+    "receipt",
+    [None, {}, {"effect_id": "wrong", "status": "committed", "output_json": "{}"}],
+)
+def test_invalid_lookup_receipt_is_typed(
+    connect: tuple[Gateway, State], receipt: dict[str, Any] | None
+) -> None:
+    gateway, state = connect
+    state.response = {} if receipt is None else {"receipt": receipt}
+    with pytest.raises(ds.DatasourceError, match="invalid lookup receipt") as caught:
+        ds.lookup(gateway, "org", "source", "effect-1")
+    assert caught.value.effect_id == "effect-1"
+
+
+def test_legacy_gateway_still_connects_but_cannot_invoke() -> None:
+    class LegacyGateway:
+        calls = 0
+
+        def unary(
+            self, procedure: str, request: Message, response_type: type[_M]
+        ) -> _M:
+            self.calls += 1
+            return response_type()
+
+    gateway = LegacyGateway()
+    client = ds.new(gateway)
+    assert client.list_sources("org") == []
+    assert gateway.calls == 1
+    with pytest.raises(TypeError, match="OperationGateway.*upgrade the runtime"):
+        client.invoke("org", "source", "create_invoice", {})
+    assert gateway.calls == 1
+
+
+def test_raw_dispatch_error_keeps_minted_id_and_readable_body(
+    connect: tuple[Gateway, State],
+) -> None:
+    gateway, state = connect
+    body = b"unauthenticated proxy response"
+    state.raw_error = (401, body, "text/plain")
+    with pytest.raises(HTTPError) as caught:
+        ds.invoke(gateway, "org", "source", "create_invoice", {})
+    assert caught.value.effect_id == state.received[0][1]["effect_id"]
+    assert caught.value.receipt.effect_id == caught.value.effect_id
+    assert caught.value.read() == body
+    assert len(state.received) == 1
+
+
+@pytest.mark.parametrize(
+    "body",
+    [b"plain proxy error", b'{"code":"unauthenticated","message":"no bearer"}', b"[]"],
+)
+def test_error_mapper_preserves_original_body_and_closes_stream(body: bytes) -> None:
+    original = BytesIO(body)
+    error = HTTPError("http://example.com", 401, "Unauthorized", Headers(), original)
+    # Runtime callers may already have caused tempfile's wrapper to cache read.
+    assert error.read(0) == b""
+    assert map_error(error) is None
+    assert original.closed
+    with error:
+        assert error.read() == body
+        assert error.code == 401
+        assert error.url == "http://example.com"
+    assert error.closed
+
+
+def test_error_mapper_accepts_bodyless_error() -> None:
+    error = HTTPError("http://example.com", 401, "Unauthorized", Headers(), None)
+    assert map_error(error) is None
+    assert error.read() == b""
+    error.close()
+
+
+@pytest.mark.parametrize(
+    "message", ["source effect not found", "source operation not found"]
+)
+def test_lookup_not_found_preserves_host_ambiguity(
+    connect: tuple[Gateway, State], message: str
+) -> None:
+    gateway, state = connect
+    state.error = (404, _error("not_found", message=message))
+    outcome = ds.lookup(gateway, "org", "source", "effect-1")
+    assert isinstance(outcome, ds.EffectNotFound)
+    assert str(outcome) == message
+    assert outcome.effect_id == "effect-1"
+    assert len(state.received) == 1
+
+
+@pytest.mark.parametrize("proxy", [False, True])
+def test_lookup_unknown_errors_are_always_values(
+    connect: tuple[Gateway, State], proxy: bool
+) -> None:
+    gateway, state = connect
+    if proxy:
+        state.raw_error = (503, b"upstream unavailable", "text/plain")
+    else:
+        state.error = (
+            400,
+            _error(
+                "failed_precondition",
+                ErrorInfo(reason="SOURCE_OPERATION_OUTCOME_UNKNOWN"),
+            ),
+        )
+    outcome = ds.lookup(gateway, "org", "source", "effect-1")
+    assert isinstance(outcome, ds.OutcomeUnknown)
+    assert outcome.effect_id == "effect-1"
+    assert len(state.received) == 1

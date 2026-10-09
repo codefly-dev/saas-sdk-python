@@ -10,6 +10,7 @@ import base64
 import binascii
 import json
 from datetime import datetime, timezone
+from io import BytesIO
 from urllib.error import HTTPError
 
 from google.protobuf.message import DecodeError, Message
@@ -17,8 +18,11 @@ from google.protobuf.timestamp_pb2 import Timestamp
 from google.rpc.error_details_pb2 import BadRequest, ErrorInfo, RetryInfo
 
 from saas_sdk._datasource_types import (
+    EffectNotFound,
+    EffectReused,
     InputError,
     NotPermitted,
+    OperationRefused,
     OutcomeUnknown,
     ProviderRefused,
     RateLimited,
@@ -48,6 +52,27 @@ def unknown(effect_id: str, message: str) -> OutcomeUnknown:
     return OutcomeUnknown(message, receipt=Receipt(effect_id, ReceiptStatus.UNKNOWN))
 
 
+def _read_preserving_body(error: HTTPError) -> bytes:
+    """Buffer once and restore the same HTTPError's public file interface."""
+    body = error.file.read()
+    error.close()
+    # addinfourl caches delegated file methods on the wrapper when accessed.
+    for name in (
+        "read",
+        "read1",
+        "readinto",
+        "readinto1",
+        "readline",
+        "readlines",
+        "peek",
+    ):
+        error.__dict__.pop(name, None)
+    HTTPError.__init__(
+        error, error.url, error.code, error.msg, error.headers, BytesIO(body)
+    )
+    return body
+
+
 def map_error(
     error: HTTPError, *, effect_id: str | None = None, lookup: bool = False
 ) -> Exception | None:
@@ -57,7 +82,7 @@ def map_error(
     not authoritative. Unknown/malformed details never replace the host message.
     """
     try:
-        payload = json.loads(error.read())
+        payload = json.loads(_read_preserving_body(error))
     except (ValueError, OSError):
         return None
     if not isinstance(payload, dict):
@@ -101,6 +126,8 @@ def map_error(
     if code == "permission_denied":
         return NotPermitted(message)
     if code == "not_found":
+        if lookup and effect_id is not None:
+            return EffectNotFound(message, effect_id=effect_id)
         return UnknownOperation(message)
     if code == "invalid_argument":
         pointer = (
@@ -131,18 +158,17 @@ def map_error(
                 pass
         return RateLimited(message, reset_at=reset_at)
     if code == "failed_precondition":
-        provider_status = info.metadata.get("provider_status", "")
-        try:
-            status = (
-                int(provider_status)
-                if provider_status.isascii() and provider_status.isdecimal()
-                else None
-            )
-        except ValueError:
-            status = None
-        if status is not None and not 100 <= status <= 599:
-            status = None
-        return ProviderRefused(message, status=status)
+        if info.reason == "SOURCE_OPERATION_OUTCOME_UNKNOWN" and effect_id is not None:
+            return unknown(effect_id, message)
+        if info.reason == "SOURCE_EFFECT_REUSED":
+            return EffectReused(message)
+        if info.reason != "SOURCE_PROVIDER_REFUSED":
+            return OperationRefused(message, reason=info.reason)
+        # f4ce896d9 supplies no provider_status metadata. Keep the public field
+        # absent until the host publishes that contract; never infer it.
+        return ProviderRefused(message)
+    if lookup and code in ("deadline_exceeded", "canceled"):
+        return error
     if (
         code in ("unavailable", "deadline_exceeded", "canceled")
         and effect_id is not None

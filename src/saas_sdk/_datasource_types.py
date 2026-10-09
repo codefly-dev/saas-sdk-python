@@ -15,8 +15,8 @@ class Effect(str, Enum):
 
 class ReceiptStatus(str, Enum):
     COMMITTED = "COMMITTED"
-    REFUSED = "REFUSED"
     UNKNOWN = "UNKNOWN"
+    NOT_ATTEMPTED = "NOT_ATTEMPTED"
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,9 @@ class Operation:
     input: dict[str, Any] = field(default_factory=dict)
     output: dict[str, Any] = field(default_factory=dict)
     max_output_bytes: int = 0
+    description: str = ""
+    # Read from list_operations; the host computes this, so declaration ignores it.
+    digest: str = ""
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,7 @@ class Receipt:
     status: ReceiptStatus
     committed_at: datetime | None = None
     provider_status: int | None = None
+    output: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -54,15 +58,22 @@ class Result:
     receipt: Receipt
 
 
-class NotPermitted(Exception):
+class DatasourceError(Exception):
+    """A typed datasource failure; dispatched invokes retain recovery identity."""
+
+    effect_id: str | None = None
+    receipt: Receipt | None = None
+
+
+class NotPermitted(DatasourceError):
     """The person may not invoke this source operation."""
 
 
-class UnknownOperation(Exception):
+class UnknownOperation(DatasourceError):
     """The host could not find the declared operation."""
 
 
-class InputError(Exception):
+class InputError(DatasourceError):
     """The host refused the input at ``pointer`` (a JSON Pointer)."""
 
     def __init__(self, message: str, *, pointer: str = "") -> None:
@@ -70,7 +81,7 @@ class InputError(Exception):
         self.pointer = pointer
 
 
-class RateLimited(Exception):
+class RateLimited(DatasourceError):
     """The shared credential budget is exhausted until ``reset_at``."""
 
     def __init__(self, message: str, *, reset_at: datetime | None = None) -> None:
@@ -78,25 +89,53 @@ class RateLimited(Exception):
         self.reset_at = reset_at
 
 
-class ProviderRefused(Exception):
-    """The host reports a provider refusal; ``status`` is its HTTP status."""
+class ProviderRefused(DatasourceError):
+    """The provider refused. ``status`` is absent at the currently pinned host."""
 
     def __init__(self, message: str, *, status: int | None = None) -> None:
         super().__init__(message)
         self.status = status
 
 
-class OutcomeUnknown(Exception):
+class OperationRefused(DatasourceError):
+    """The host refused an operation precondition, identified by ``reason``."""
+
+    def __init__(self, message: str, *, reason: str = "") -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+class EffectReused(DatasourceError):
+    """The host rejected changed input under an existing effect ID."""
+
+
+class EffectNotFound(DatasourceError):
+    """Lookup found no accessible effect; same-ID recovery remains safe.
+
+    NOT_ATTEMPTED labels the lookup miss. The pinned host also sends NotFound
+    when a declaration disappeared, so it is not proof of no prior action.
+    """
+
+    effect_id: str
+    receipt: Receipt
+
+    def __init__(self, message: str, *, effect_id: str) -> None:
+        super().__init__(message)
+        self.effect_id = effect_id
+        self.receipt = Receipt(effect_id, ReceiptStatus.NOT_ATTEMPTED)
+
+
+class OutcomeUnknown(DatasourceError):
     """The effect may have happened. Look it up; do not invent a new ID.
 
     Raised by invoke when its reply is lost, but **returned as a value** by
     lookup. The receipt retains the effect ID, including an SDK-minted ID.
     """
 
+    receipt: Receipt
+    effect_id: str
+
     def __init__(self, message: str, *, receipt: Receipt) -> None:
         super().__init__(message)
         self.receipt = receipt
-
-    @property
-    def effect_id(self) -> str:
-        return self.receipt.effect_id
+        self.effect_id = receipt.effect_id

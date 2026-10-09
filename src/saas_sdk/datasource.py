@@ -26,6 +26,7 @@ a secret reference — no read ever returns it.
 
 from __future__ import annotations
 
+import inspect
 import json
 import math
 import secrets
@@ -43,10 +44,14 @@ from google.protobuf.timestamp_pb2 import Timestamp
 
 from saas_sdk._datasource_errors import map_error, unknown
 from saas_sdk._datasource_types import (
+    DatasourceError,
     Effect,
+    EffectNotFound,
+    EffectReused,
     InputError,
     NotPermitted,
     Operation,
+    OperationRefused,
     OutcomeUnknown,
     ProviderRefused,
     RateLimited,
@@ -64,12 +69,16 @@ Datasource = pb.Datasource
 __all__ = [
     "Client",
     "Datasource",
+    "DatasourceError",
     "Effect",
+    "EffectNotFound",
+    "EffectReused",
     "Gateway",
     "InputError",
     "NotPermitted",
     "Operation",
     "OperationGateway",
+    "OperationRefused",
     "OutcomeUnknown",
     "ProviderRefused",
     "RateLimited",
@@ -213,14 +222,7 @@ class Client:
                 raise ValueError("deadline must be a finite future Unix timestamp")
         if effect_id is None:
             effect_id = _uuid7()
-        if (
-            not effect_id
-            or not effect_id.isascii()
-            or any(ord(c) <= 32 or ord(c) == 127 for c in effect_id)
-        ):
-            raise ValueError(
-                "effect_id must be nonempty printable ASCII without whitespace"
-            )
+        _validate_effect_id(effect_id)
         # The Runnable envelope carries one JSON object as text. Keeping it
         # out of Struct also preserves integers beyond the double range.
         try:
@@ -259,7 +261,7 @@ class Client:
         try:
             receipt = _receipt(response["receipt"])
             output = _json_object(response.get("output_json", ""))
-        except (KeyError, TypeError, ValueError) as error:
+        except (KeyError, TypeError, ValueError, OverflowError) as error:
             raise unknown(
                 effect_id, "host returned a missing or invalid operation response"
             ) from error
@@ -273,12 +275,13 @@ class Client:
 
     def lookup(
         self, org_id: str, source_id: str, effect_id: str
-    ) -> Receipt | OutcomeUnknown:
+    ) -> Receipt | OutcomeUnknown | EffectNotFound:
         """Read a receipt once. Unknown is a value, never raised here.
 
         org_id/source_id retain the Go facade's signature; the wire selector is
         only effect_id. The host resolves its binding under the gateway's tenant.
         """
+        _validate_effect_id(effect_id)
         try:
             response = _rpc(
                 self._gateway,
@@ -287,11 +290,18 @@ class Client:
                 effect_id=effect_id,
                 lookup=True,
             )
-        except OutcomeUnknown as outcome:
+        except (OutcomeUnknown, EffectNotFound) as outcome:
             return outcome
-        receipt = _receipt(response["receipt"])
-        if receipt.effect_id != effect_id:
-            raise ValueError("host returned a receipt for a different effect ID")
+        try:
+            receipt = _receipt(response["receipt"])
+            if receipt.effect_id != effect_id:
+                raise ValueError("host returned a receipt for a different effect ID")
+        except (KeyError, TypeError, ValueError, OverflowError) as error:
+            failure = DatasourceError(
+                "host returned a missing or invalid lookup receipt"
+            )
+            failure.effect_id = effect_id
+            raise failure from error
         if _is_unknown(receipt):
             return OutcomeUnknown("host has not resolved the effect", receipt=receipt)
         return receipt
@@ -345,7 +355,7 @@ def invoke(
 
 def lookup(
     gw: Gateway, org_id: str, source_id: str, effect_id: str
-) -> Receipt | OutcomeUnknown:
+) -> Receipt | OutcomeUnknown | EffectNotFound:
     return new(gw).lookup(org_id, source_id, effect_id)
 
 
@@ -382,32 +392,61 @@ def _rpc(
     # Resolve both message types from the generated method descriptor. The
     # host owns these types; there is no guessed wire schema or fallback here.
     service = pb.DESCRIPTOR.services_by_name["DatasourceService"]
-    if method not in service.methods_by_name:
-        raise RuntimeError(
-            f"{method} is absent from the generated host contract; regenerate "
-            "from module-saas-starter#1049 before using callable sources"
-        )
     descriptor = service.methods_by_name[method]
     request_type = message_factory.GetMessageClass(descriptor.input_type)
     response_type = message_factory.GetMessageClass(descriptor.output_type)
-    request = json_format.ParseDict(fields, request_type())
     try:
-        if headers is None and timeout is None:
-            response = gateway.unary(_SERVICE + method, request, response_type)
-        else:
-            response = cast(OperationGateway, gateway).unary(
+        request = json_format.ParseDict(fields, request_type())
+    except json_format.ParseError as error:
+        raise InputError(str(error)) from error
+    if headers is not None or timeout is not None:
+        try:
+            inspect.signature(gateway.unary).bind(
                 _SERVICE + method,
                 request,
                 response_type,
                 headers=headers,
                 timeout=timeout,
             )
-    except HTTPError as error:
-        mapped = map_error(error, effect_id=effect_id, lookup=lookup)
-        if mapped is None:
-            raise
-        raise mapped from error
-    return json_format.MessageToDict(response, preserving_proto_field_name=True)
+        except (TypeError, ValueError) as error:
+            raise TypeError(
+                "invoke requires OperationGateway.unary with headers and timeout keyword options; "
+                "upgrade the runtime gateway before calling connected sources"
+            ) from error
+    try:
+        try:
+            if headers is None and timeout is None:
+                response = gateway.unary(_SERVICE + method, request, response_type)
+            else:
+                response = cast(OperationGateway, gateway).unary(
+                    _SERVICE + method,
+                    request,
+                    response_type,
+                    headers=headers,
+                    timeout=timeout,
+                )
+        except HTTPError as error:
+            mapped = map_error(error, effect_id=effect_id, lookup=lookup)
+            if mapped is None:
+                if effect_id is not None and 500 <= error.code <= 599:
+                    raise unknown(effect_id, str(error)) from error
+                raise
+            if mapped is error:
+                raise
+            raise mapped from error
+        return json_format.MessageToDict(response, preserving_proto_field_name=True)
+    except Exception as error:
+        # Go returns Result alongside every post-dispatch error. Python errors
+        # retain the same recovery identity, including raw gateway exceptions.
+        if (
+            effect_id is not None
+            and not lookup
+            and getattr(error, "effect_id", None) is None
+        ):
+            vars(error).update(
+                effect_id=effect_id, receipt=Receipt(effect_id, ReceiptStatus.UNKNOWN)
+            )
+        raise
 
 
 def _receipt(value: dict[str, Any]) -> Receipt:
@@ -422,12 +461,13 @@ def _receipt(value: dict[str, Any]) -> Receipt:
     if value["status"] not in statuses:
         raise ValueError("host returned an unsupported receipt status")
     status = statuses[value["status"]]
-    _json_object(value.get("output_json", ""))
+    output = _json_object(value.get("output_json", ""))
     return Receipt(
         effect_id=value["effect_id"],
         status=status,
         committed_at=committed_at,
         provider_status=value.get("provider_status"),
+        output=output if status is ReceiptStatus.COMMITTED else None,
     )
 
 
@@ -446,24 +486,13 @@ def _json_object(value: str) -> dict[str, Any]:
 
 
 def _operation_fields(operation: Operation) -> dict[str, Any]:
-    # The enum's prefix belongs to the proto. Match the public effect name
-    # against that descriptor rather than restating its numeric wire values.
-    if "SourceOperation" not in pb.DESCRIPTOR.message_types_by_name:
-        raise RuntimeError(
-            "SourceOperation is absent from the generated host contract; regenerate "
-            "from module-saas-starter#1049 before declaring callable sources"
-        )
-    descriptor = pb.DESCRIPTOR.message_types_by_name["SourceOperation"]
-    effect_enum = descriptor.fields_by_name["effect"].enum_type
-    assert effect_enum is not None
-    effect = next(
-        value.name
-        for value in effect_enum.values
-        if value.name == operation.effect.value
-        or value.name.endswith("_" + operation.effect.value)
-    )
+    effects = {Effect.READ_ONLY: "EFFECT_READ_ONLY", Effect.MUTATION: "EFFECT_MUTATION"}
+    if not isinstance(operation.effect, Effect):
+        raise InputError("invalid operation effect")
+    effect = effects[operation.effect]
     return {
         "name": operation.name,
+        "description": operation.description,
         "method": operation.method,
         "path": operation.path,
         "query": operation.query,
@@ -475,19 +504,38 @@ def _operation_fields(operation: Operation) -> dict[str, Any]:
 
 
 def _operation(value: dict[str, Any]) -> Operation:
-    effect = next(
-        effect
-        for effect in Effect
-        if value["effect"] == effect.value
-        or value["effect"].endswith("_" + effect.value)
-    )
+    effect = {
+        "EFFECT_READ_ONLY": Effect.READ_ONLY,
+        "EFFECT_MUTATION": Effect.MUTATION,
+    }.get(value.get("effect", ""))
+    if effect is None:
+        raise DatasourceError("host returned an unsupported operation effect")
     return Operation(
-        name=value["name"],
-        method=value["method"],
-        path=value["path"],
+        name=value.get("name", ""),
+        description=value.get("description", ""),
+        digest=value.get("digest", ""),
+        method=value.get("method", ""),
+        path=value.get("path", ""),
         query=value.get("query", []),
         input=value.get("input_schema", {}),
         output=value.get("output_schema", {}),
         effect=effect,
         max_output_bytes=int(value.get("max_output_bytes", 0)),
     )
+
+
+def _validate_effect_id(effect_id: str) -> None:
+    try:
+        encoded = effect_id.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise InputError("effect_id must be valid UTF-8") from error
+    # HTTP transports trim edge spaces, which would make header and field differ.
+    if (
+        not 1 <= len(encoded) <= 128
+        or effect_id.startswith(" ")
+        or effect_id.endswith(" ")
+        or any(byte < 32 or byte == 127 for byte in encoded)
+    ):
+        raise InputError(
+            "effect_id must be 1–128 UTF-8 bytes without HTTP controls or edge spaces"
+        )
