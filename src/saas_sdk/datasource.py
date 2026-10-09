@@ -1,5 +1,5 @@
 """Typed, gateway-bound client facade for the saas ``DatasourceService`` — the
-"connection" half of datasource ingestion, and the Python twin of
+connection and call halves of datasource, and the Python twin of
 ``saas-sdk-go``'s ``datasource`` package.
 
 It is the syntactic-sugar layer over the generated protobuf message types: it
@@ -26,18 +26,65 @@ a secret reference — no read ever returns it.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Protocol, TypeVar
+import math
+import secrets
+import time
+from collections.abc import Mapping, Sequence
+from datetime import timezone
+from http.client import IncompleteRead
+from typing import Any, Protocol, TypeVar, cast
+from urllib.error import HTTPError, URLError
+from uuid import UUID
 
+from google.protobuf import json_format, message_factory
+from google.protobuf.message import DecodeError, Message
+from google.protobuf.struct_pb2 import Struct
+from google.protobuf.timestamp_pb2 import Timestamp
+
+from saas_sdk._datasource_errors import map_error, unknown
+from saas_sdk._datasource_types import (
+    Effect,
+    InputError,
+    NotPermitted,
+    Operation,
+    OutcomeUnknown,
+    ProviderRefused,
+    RateLimited,
+    Receipt,
+    ReceiptStatus,
+    Result,
+    UnknownOperation,
+)
 from saas_sdk._gen import datasource_pb2 as pb
 
 # Re-exported so a consumer names the types this facade returns without importing
 # saas_sdk._gen. Same objects, so isinstance and existing imports keep working.
 Datasource = pb.Datasource
 
-__all__ = ["Client", "Datasource", "Gateway", "new"]
+__all__ = [
+    "Client",
+    "Datasource",
+    "Effect",
+    "Gateway",
+    "InputError",
+    "NotPermitted",
+    "Operation",
+    "OperationGateway",
+    "OutcomeUnknown",
+    "ProviderRefused",
+    "RateLimited",
+    "Receipt",
+    "ReceiptStatus",
+    "Result",
+    "UnknownOperation",
+    "declare_operations",
+    "invoke",
+    "list_operations",
+    "lookup",
+    "new",
+]
 
-_M = TypeVar("_M")
+_M = TypeVar("_M", bound=Message)
 
 _SERVICE = "/saas.accounts.v1.DatasourceService/"
 
@@ -50,7 +97,30 @@ class Gateway(Protocol):
     auth-agnostic.
     """
 
-    def unary(self, procedure: str, request, response_type: type[_M]) -> _M: ...
+    def unary(
+        self, procedure: str, request: Message, response_type: type[_M]
+    ) -> _M: ...
+
+
+class OperationGateway(Gateway, Protocol):
+    """Gateway call options required by the call half.
+
+    The runtime must merge ``headers`` into its request without replacing its
+    own Work Context, and apply ``timeout`` in seconds to this one call. It
+    must not retry an effect. This is a structural protocol, not an SDK
+    dependency for the runtime. The published three-argument runtime gateway
+    does not yet implement these options (see README).
+    """
+
+    def unary(
+        self,
+        procedure: str,
+        request: Message,
+        response_type: type[_M],
+        *,
+        headers: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> _M: ...
 
 
 class Client:
@@ -83,7 +153,9 @@ class Client:
         if bool(collection) == bool(boundary_node_id):
             raise ValueError("pass exactly one of collection or boundary_node_id")
         boundary = (
-            {"collection_label": collection} if collection else {"boundary_node_id": boundary_node_id}
+            {"collection_label": collection}
+            if collection
+            else {"boundary_node_id": boundary_node_id}
         )
         request = pb.AddGitHubSourceRequest(
             org_id=org_id,
@@ -102,7 +174,9 @@ class Client:
     def list_sources(self, org_id: str) -> list[Datasource]:
         """Return the org's connected datasources."""
         response = self._gateway.unary(
-            _SERVICE + "ListSources", pb.ListSourcesRequest(org_id=org_id), pb.ListSourcesResponse
+            _SERVICE + "ListSources",
+            pb.ListSourcesRequest(org_id=org_id),
+            pb.ListSourcesResponse,
         )
         return list(response.datasources)
 
@@ -110,11 +184,293 @@ class Client:
         """Mark a source for ingestion and return the durable jobs-inbox id of
         the enqueued request."""
         response = self._gateway.unary(
-            _SERVICE + "SyncSource", pb.SyncSourceRequest(org_id=org_id, id=id), pb.SyncSourceResponse
+            _SERVICE + "SyncSource",
+            pb.SyncSourceRequest(org_id=org_id, id=id),
+            pb.SyncSourceResponse,
         )
         return response.job_id
+
+    def invoke(
+        self,
+        org_id: str,
+        source_id: str,
+        operation: str,
+        input: Mapping[str, Any],
+        *,
+        effect_id: str | None = None,
+        deadline: float | None = None,
+    ) -> Result:
+        """Invoke once; ``deadline`` is an absolute Unix timestamp in seconds.
+
+        Persist a caller-chosen effect ID before a mutation when recovery must
+        survive a process crash. If this call loses its reply, OutcomeUnknown
+        retains even a minted ID. Lookup that ID; never retry with a new one.
+        """
+        timeout = None
+        if deadline is not None:
+            timeout = deadline - time.time()
+            if not math.isfinite(deadline) or timeout <= 0:
+                raise ValueError("deadline must be a finite future Unix timestamp")
+        if effect_id is None:
+            effect_id = _uuid7()
+        if (
+            not effect_id
+            or not effect_id.isascii()
+            or any(ord(c) <= 32 or ord(c) == 127 for c in effect_id)
+        ):
+            raise ValueError(
+                "effect_id must be nonempty printable ASCII without whitespace"
+            )
+        # Let protobuf validate the JSON value; schema validation is the host's.
+        input_struct = Struct()
+        try:
+            input_struct.update(dict(input))
+        except (ValueError, TypeError) as error:
+            raise InputError(str(error)) from error
+        try:
+            response = _rpc(
+                self._gateway,
+                "InvokeSourceOperation",
+                {
+                    "org_id": org_id,
+                    "source_id": source_id,
+                    "operation": operation,
+                    "input": json_format.MessageToDict(input_struct),
+                    "effect_id": effect_id,
+                },
+                effect_id=effect_id,
+                headers={"x-codefly-effect-id": effect_id},
+                timeout=timeout,
+            )
+        except (
+            TimeoutError,
+            ConnectionError,
+            IncompleteRead,
+            DecodeError,
+            URLError,
+        ) as error:
+            # HTTPError is a URLError too: a known HTTP rejection is not a lost
+            # reply. _rpc already maps the recognized Connect statuses.
+            if isinstance(error, HTTPError):
+                raise
+            raise unknown(effect_id, str(error)) from error
+        try:
+            receipt = _receipt(response["receipt"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise unknown(
+                effect_id, "host returned a missing or invalid receipt"
+            ) from error
+        if receipt.effect_id != effect_id:
+            raise unknown(
+                effect_id, "host returned a receipt for a different effect ID"
+            )
+        if _is_unknown(receipt):
+            raise OutcomeUnknown("host has not resolved the effect", receipt=receipt)
+        return Result(output=response.get("output", {}), receipt=receipt)
+
+    def lookup(
+        self, org_id: str, source_id: str, effect_id: str
+    ) -> Receipt | OutcomeUnknown:
+        """Read a receipt once. Unknown is a value, never raised here."""
+        response = _rpc(
+            self._gateway,
+            "LookupInvokeSourceOperation",
+            {"org_id": org_id, "source_id": source_id, "effect_id": effect_id},
+        )
+        receipt = _receipt(response["receipt"])
+        if receipt.effect_id != effect_id:
+            raise ValueError("host returned a receipt for a different effect ID")
+        if _is_unknown(receipt):
+            return OutcomeUnknown("host has not resolved the effect", receipt=receipt)
+        return receipt
+
+    def declare_operations(
+        self, org_id: str, source_id: str, operations: list[Operation]
+    ) -> None:
+        """Replace the host's declarations atomically (host-admin permission)."""
+        _rpc(
+            self._gateway,
+            "DeclareSourceOperations",
+            {
+                "org_id": org_id,
+                "source_id": source_id,
+                "operations": [
+                    _operation_fields(operation) for operation in operations
+                ],
+            },
+        )
+
+    def list_operations(self, org_id: str, source_id: str) -> list[Operation]:
+        """Read the host's admitted declaration set without caching it."""
+        response = _rpc(
+            self._gateway,
+            "ListSourceOperations",
+            {"org_id": org_id, "source_id": source_id},
+        )
+        return [_operation(value) for value in response.get("operations", [])]
 
 
 def new(gateway: Gateway) -> Client:
     """Bind the datasource SDK to a solution runtime gateway."""
     return Client(gateway)
+
+
+def invoke(
+    gw: OperationGateway,
+    org_id: str,
+    source_id: str,
+    operation: str,
+    input: Mapping[str, Any],
+    *,
+    effect_id: str | None = None,
+    deadline: float | None = None,
+) -> Result:
+    """Call the same facade as ``new(gw).invoke(...)``."""
+    return new(gw).invoke(
+        org_id, source_id, operation, input, effect_id=effect_id, deadline=deadline
+    )
+
+
+def lookup(
+    gw: Gateway, org_id: str, source_id: str, effect_id: str
+) -> Receipt | OutcomeUnknown:
+    return new(gw).lookup(org_id, source_id, effect_id)
+
+
+def declare_operations(
+    gw: Gateway, org_id: str, source_id: str, operations: list[Operation]
+) -> None:
+    new(gw).declare_operations(org_id, source_id, operations)
+
+
+def list_operations(gw: Gateway, org_id: str, source_id: str) -> list[Operation]:
+    return new(gw).list_operations(org_id, source_id)
+
+
+def _uuid7() -> str:
+    # RFC 9562: 48 timestamp bits, version 7, 12 random bits, variant 10,
+    # 62 random bits. Python 3.10/3.12 do not supply uuid.uuid7.
+    random = secrets.randbits(74)
+    value = ((time.time_ns() // 1_000_000) << 80) | (7 << 76)
+    value |= (random >> 62) << 64
+    value |= (2 << 62) | (random & ((1 << 62) - 1))
+    return str(UUID(int=value))
+
+
+def _rpc(
+    gateway: Gateway,
+    method: str,
+    fields: dict[str, Any],
+    *,
+    effect_id: str | None = None,
+    headers: Mapping[str, str] | None = None,
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    # Resolve both message types from the generated method descriptor. The
+    # host owns these types; there is no guessed wire schema or fallback here.
+    service = pb.DESCRIPTOR.services_by_name["DatasourceService"]
+    if method not in service.methods_by_name:
+        raise RuntimeError(
+            f"{method} is absent from the generated host contract; regenerate "
+            "from module-saas-starter#1049 before using callable sources"
+        )
+    descriptor = service.methods_by_name[method]
+    request_type = message_factory.GetMessageClass(descriptor.input_type)
+    response_type = message_factory.GetMessageClass(descriptor.output_type)
+    request = json_format.ParseDict(fields, request_type())
+    try:
+        if headers is None and timeout is None:
+            response = gateway.unary(_SERVICE + method, request, response_type)
+        else:
+            response = cast(OperationGateway, gateway).unary(
+                _SERVICE + method,
+                request,
+                response_type,
+                headers=headers,
+                timeout=timeout,
+            )
+    except HTTPError as error:
+        mapped = map_error(error, effect_id=effect_id)
+        if mapped is None:
+            raise
+        raise mapped from error
+    return json_format.MessageToDict(response, preserving_proto_field_name=True)
+
+
+def _receipt(value: dict[str, Any]) -> Receipt:
+    committed_at = None
+    if value.get("committed_at"):
+        timestamp = Timestamp()
+        timestamp.FromJsonString(value["committed_at"])
+        committed_at = timestamp.ToDatetime(tzinfo=timezone.utc)
+    if not isinstance(value.get("status"), str):
+        raise TypeError("host returned an unsupported receipt status")
+    status = next(
+        (
+            status
+            for status in ReceiptStatus
+            if value["status"] == status.value
+            or value["status"].endswith("_" + status.value)
+        ),
+        None,
+    )
+    if status is None:
+        raise ValueError("host returned an unsupported receipt status")
+    return Receipt(
+        effect_id=value["effect_id"],
+        status=status,
+        committed_at=committed_at,
+        provider_status=value.get("provider_status"),
+    )
+
+
+def _is_unknown(receipt: Receipt) -> bool:
+    return receipt.status is ReceiptStatus.UNKNOWN
+
+
+def _operation_fields(operation: Operation) -> dict[str, Any]:
+    # The enum's prefix belongs to the proto. Match the public effect name
+    # against that descriptor rather than restating its numeric wire values.
+    if "SourceOperation" not in pb.DESCRIPTOR.message_types_by_name:
+        raise RuntimeError(
+            "SourceOperation is absent from the generated host contract; regenerate "
+            "from module-saas-starter#1049 before declaring callable sources"
+        )
+    descriptor = pb.DESCRIPTOR.message_types_by_name["SourceOperation"]
+    effect_enum = descriptor.fields_by_name["effect"].enum_type
+    assert effect_enum is not None
+    effect = next(
+        value.name
+        for value in effect_enum.values
+        if value.name == operation.effect.value
+        or value.name.endswith("_" + operation.effect.value)
+    )
+    return {
+        "name": operation.name,
+        "method": operation.method,
+        "path": operation.path,
+        "query": operation.query,
+        "input_schema": operation.input,
+        "output_schema": operation.output,
+        "effect": effect,
+        "max_output_bytes": operation.max_output_bytes,
+    }
+
+
+def _operation(value: dict[str, Any]) -> Operation:
+    effect = next(
+        effect
+        for effect in Effect
+        if value["effect"] == effect.value
+        or value["effect"].endswith("_" + effect.value)
+    )
+    return Operation(
+        name=value["name"],
+        method=value["method"],
+        path=value["path"],
+        query=value.get("query", []),
+        input=value.get("input_schema", {}),
+        output=value.get("output_schema", {}),
+        effect=effect,
+        max_output_bytes=int(value.get("max_output_bytes", 0)),
+    )

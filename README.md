@@ -49,6 +49,100 @@ Packages:
   start and stamps it on outgoing calls. **Callee side**, a service verifies a
   presented context. See below.
 
+## Calling a connected source (unreleased)
+
+The call half is being prepared for
+[module-saas-starter#1049](https://github.com/codefly-dev/module-saas-starter/issues/1049).
+The currently recorded proto does **not** have these four RPCs. The PR remains
+a draft until generation from the host PR head and verification against that
+contract are complete. Never release from the development ref: wait for the
+host tag and record its commit in `SOURCE.txt` first.
+
+`datasource.invoke`, `lookup`, `declare_operations` and `list_operations` also
+exist on `datasource.new(gateway)`. The host holds the credential, admits the
+operation's route and schemas, resolves its endpoint, records the receipt, and
+audits the call as the person. An invocation supplies an operation name and
+input, never a provider URL or credential. The SDK converts input to protobuf
+`Struct` and uses the existing `Gateway.unary` seam for every call.
+
+The following doctest uses a gateway fixture and a source already connected to
+`https://example.com`. Its declared operation is `GET /invoices`; declaring it
+requires the host's admin permission. Neither URL resolution nor provider
+authentication belongs in the invocation:
+
+```pycon
+>>> from saas_sdk import datasource
+>>> import time
+>>> operation = datasource.Operation(
+...     name="list_invoices", method="GET", path="/invoices", query=["limit"],
+...     input={"type": "object", "additionalProperties": False,
+...            "properties": {"limit": {"type": "integer"}}},
+...     output={"type": "object"}, effect=datasource.Effect.READ_ONLY,
+...     max_output_bytes=65536,
+... )
+>>> datasource.declare_operations(gateway, "org-1", "source-1", [operation])
+>>> datasource.list_operations(gateway, "org-1", "source-1") == [operation]
+True
+>>> result = datasource.invoke(
+...     gateway, "org-1", "source-1", "list_invoices", {"limit": 2},
+...     effect_id="request-1", deadline=time.time() + 3.0,
+... )
+>>> result.output
+{'invoices': [{'id': 'invoice-1'}]}
+>>> result.receipt.effect_id
+'request-1'
+>>> datasource.lookup(gateway, "org-1", "source-1", "request-1") == result.receipt
+True
+
+```
+
+An omitted `effect_id` gets a UUIDv7, returned on `Result.receipt.effect_id`.
+For crash-safe mutation recovery, choose and persist the ID **before** invoking:
+the SDK stores nothing. Same ID and identical input means host replay; changing
+input under the same ID is refused by the host. Both calls reach the host: the
+SDK neither deduplicates, retries, nor caches receipts locally. It adds only
+`x-codefly-effect-id` through gateway call options, matching the request's ID.
+The gateway forwards its Work Context unchanged; the facade never reads,
+re-mints, exchanges, or sets a Work Context header.
+
+`deadline` is an absolute Unix timestamp in **seconds**, matching the Go SDK's
+absolute deadline. The remaining duration is passed to the gateway as `timeout`;
+an expired or non-finite deadline is refused before dispatch.
+The gateway must support the `OperationGateway` protocol:
+`unary(procedure, request, response_type, *, headers=None, timeout=None)`, merge
+per-call headers with its own authority, and perform one attempt. The published
+`solution-runtime-python` gateway currently has only the three-argument form,
+forwards the bearer only, and uses a fixed ten-second timeout. **That runtime
+needs Work Context forwarding and call options before it can use this surface.**
+Existing connection methods continue to use its three-argument seam. There is
+no SDK transport or fallback that bypasses the runtime.
+
+Host Connect statuses map to the Go sibling's names:
+
+| Host response | Python value |
+|---|---|
+| `PermissionDenied` | raises `NotPermitted` |
+| `NotFound` | raises `UnknownOperation` |
+| `InvalidArgument` + `BadRequest.FieldViolation` | raises `InputError`; `.pointer` is the first violation's JSON Pointer |
+| `ResourceExhausted` + `ErrorInfo{DATASOURCE_RATE_LIMITED}` | raises `RateLimited`; `.reset_at` is the host's UTC reset time, or receipt time plus `RetryInfo.retry_delay` |
+| `FailedPrecondition` | raises `ProviderRefused`; `.status` is the provider status from the details, when supplied |
+| `Unavailable`, `DeadlineExceeded`, `Canceled` during invocation, or a lost reply | raises `OutcomeUnknown`, retaining `.receipt` and `.effect_id` |
+| Lookup answers unknown | **returns** `OutcomeUnknown`; it is not raised |
+
+Unknown is **not failure**: the mutation may have happened. Look up the same ID
+and handle the returned value explicitly. Never create a new effect ID to
+recover a lost reply. `lookup` returns `Receipt | OutcomeUnknown`; use
+`isinstance(value, datasource.OutcomeUnknown)` to distinguish them. Other
+lookup failures still raise normally, including an unavailable lookup endpoint.
+`Receipt.status` is `ReceiptStatus.COMMITTED`, `REFUSED` or `UNKNOWN`, matching
+the Go SDK. Absent commit time/provider status remain `None`. Missing error
+details likewise remain absent (`InputError.pointer` is empty).
+
+The host is the disclosure guard. Typed errors preserve its message verbatim,
+including credential-looking strings; the SDK does not redact or repair host
+disclosures. Unknown Connect statuses and incoherent HTTP/code pairs propagate
+as the original gateway exception.
+
 ## Work Context
 
 A Work Context is a signed, delegated-authority capability carried in the
@@ -191,9 +285,18 @@ From a checkout of that repo:
 scripts/generate.sh <module-saas-starter>/module/services/accounts/proto
 ```
 
-That builds a descriptor image for `datasource.proto`, strips the custom options
+That builds a descriptor image for the exposed protos, strips the custom options
 and shared-proto dependencies (`scripts/strip_options.py`), and regenerates
-`src/saas_sdk/_gen/datasource_pb2.py`. **Never hand-edit `_gen/`.**
+`src/saas_sdk/_gen/*_pb2.py` and their `.pyi` files. **Never hand-edit `_gen/`.**
+
+For callable-source development, fetch the PR linked from host issue #1049,
+check out its exact head commit in a separate host checkout, run the command
+above, and record the full 40-character SHA in `SOURCE.txt`. The generated
+method gate and Connect tests must then pass against that real contract; there
+are no replacement fixture protos. The `callable_contract` pytest marker only
+identifies these pending tests: normal CI still runs them and fails while the
+proto is absent. Before release, replace the development ref with the accepted
+host tag's commit, regenerate again, and match the host module version.
 
 ## Consuming
 
