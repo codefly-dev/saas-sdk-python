@@ -11,7 +11,7 @@
 - Document call options, receipt recovery and the host's disclosure boundary
   in `README.md`, with an executable `example.com` provider example.
 - Regenerate from host PR #1052 head
-  `86ee51fd8b4d66aad9da2509483e14d3c7534764`. Calls carry JSON objects in
+  `2a16c688c61d66645e1063c495fa38eaf2fa52de`. Calls carry JSON objects in
   `input_json`/`output_json` strings; lookup selects only the effect ID, and
   receipts decode the host's text status and RFC3339 commit time.
 - Include the host's `PruneSourceOperationReceipts` and its lookup in generated
@@ -25,9 +25,15 @@
   other precondition reasons. Preserve effect IDs on every dispatched failure,
   including non-Connect HTTP errors, and keep raw error bodies readable.
 - Return `EffectNotFound` from lookup with `NOT_ATTEMPTED`; document same-ID
-  recovery and the pinned host's ambiguous lookup NotFound response. Add
+  recovery when no attempt marker exists. The host preserves receipt lookup
+  across declaration removal or replacement under current source authority. Add
   committed `Receipt.output` and operation `description`/read-only `digest`,
   matching Go #30; remove the unused `REFUSED` receipt status.
+- Add `OperationDeclarationRemoved` for the host's
+  `SOURCE_OPERATION_DECLARATION_REMOVED` reason, matching Go. Preserve the effect
+  ID and `receipt_status` (`COMMITTED` or conservatively `UNKNOWN`) on its receipt.
+  Recovery uses lookup with the original ID, never a fresh-ID retry. Lookup
+  returns this typed outcome if the host sends it there.
 - Validate UTF-8 effect IDs against the host byte limit, report declaration
   parsing failures as typed errors, and diagnose unsupported runtime gateways
   before dispatch. Document the timeout and host error-detail limitations and

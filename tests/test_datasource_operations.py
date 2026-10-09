@@ -207,6 +207,21 @@ def _error(
     }
 
 
+def _removed_error(receipt_status: str | None) -> dict[str, Any]:
+    # operationDeclarationRemoved at the recorded host ref uses this shape.
+    return _error(
+        "failed_precondition",
+        ErrorInfo(
+            reason="SOURCE_OPERATION_DECLARATION_REMOVED",
+            domain="saas.accounts.v1",
+            metadata={}
+            if receipt_status is None
+            else {"receipt_status": receipt_status},
+        ),
+        message="source operation declaration was removed; recover the original effect with Lookup",
+    )
+
+
 def test_generated_contract_has_all_callable_methods() -> None:
     methods = pb.DESCRIPTOR.services_by_name["DatasourceService"].methods_by_name
     missing = set(_METHODS) - set(methods)
@@ -819,6 +834,155 @@ def test_nonprovider_preconditions_retain_host_reason(
     assert not isinstance(caught.value, ds.ProviderRefused)
 
 
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [("committed", ds.ReceiptStatus.COMMITTED), ("unknown", ds.ReceiptStatus.UNKNOWN)],
+)
+@pytest.mark.parametrize("effect_id", [None, "retained-effect"])
+def test_removed_declaration_keeps_receipt_evidence_without_retry(
+    connect: tuple[Gateway, State],
+    status: str,
+    expected: ds.ReceiptStatus,
+    effect_id: str | None,
+) -> None:
+    gateway, state = connect
+    state.error = (400, _removed_error(status))
+    with pytest.raises(ds.OperationDeclarationRemoved) as caught:
+        ds.invoke(gateway, "org", "source", "create_invoice", {}, effect_id=effect_id)
+    error = caught.value
+    assert error.receipt_status is expected
+    assert error.effect_id == state.received[0][1]["effect_id"]
+    if effect_id is None:
+        assert error.effect_id is not None
+        assert UUID(error.effect_id).version == 7
+    else:
+        assert error.effect_id == effect_id
+    assert error.receipt is not None
+    assert error.receipt == ds.Receipt(error.effect_id, expected)
+    assert not isinstance(
+        error, (ds.ProviderRefused, ds.OperationRefused, ds.OutcomeUnknown)
+    )
+    assert str(error) == state.error[1]["message"]
+    assert isinstance(error.__cause__, HTTPError)
+    assert json.loads(error.__cause__.read()) == state.error[1]
+    assert len(state.received) == 1
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        None,
+        "",
+        "COMMITTED",
+        "UNKNOWN",
+        "not_attempted",
+        " committed",
+        "committed ",
+        "future",
+    ],
+)
+def test_removed_declaration_never_infers_committed_or_not_attempted(
+    connect: tuple[Gateway, State],
+    status: str | None,
+) -> None:
+    gateway, state = connect
+    payload = _removed_error(status)
+    payload["message"] = "receipt_status=committed; previously committed"
+    state.error = (400, payload)
+    with pytest.raises(ds.OperationDeclarationRemoved) as caught:
+        ds.invoke(gateway, "org", "source", "create_invoice", {}, effect_id="retained")
+    assert caught.value.receipt_status is ds.ReceiptStatus.UNKNOWN
+    assert caught.value.receipt == ds.Receipt("retained", ds.ReceiptStatus.UNKNOWN)
+    assert str(caught.value) == payload["message"]
+    assert len(state.received) == 1
+
+
+@pytest.mark.parametrize(
+    ("code", "reason", "expected"),
+    [
+        ("failed_precondition", "SOURCE_DECLARATION_CHANGED", ds.OperationRefused),
+        ("invalid_argument", "SOURCE_OPERATION_DECLARATION_REMOVED", ds.InputError),
+    ],
+)
+def test_removed_declaration_requires_both_code_and_reason(
+    connect: tuple[Gateway, State],
+    code: str,
+    reason: str,
+    expected: type[Exception],
+) -> None:
+    gateway, state = connect
+    state.error = (
+        400,
+        _error(
+            code, ErrorInfo(reason=reason, metadata={"receipt_status": "committed"})
+        ),
+    )
+    with pytest.raises(expected):
+        ds.invoke(gateway, "org", "source", "create_invoice", {}, effect_id="retained")
+    assert len(state.received) == 1
+
+
+@pytest.mark.parametrize("status", ["committed", "unknown", None, "unexpected"])
+def test_lookup_returns_removed_declaration_as_an_outcome(
+    connect: tuple[Gateway, State],
+    status: str | None,
+) -> None:
+    gateway, state = connect
+    state.error = (400, _removed_error(status))
+    outcome = ds.lookup(gateway, "org", "source", "retained")
+    assert isinstance(outcome, ds.OperationDeclarationRemoved)
+    expected = (
+        ds.ReceiptStatus.COMMITTED
+        if status == "committed"
+        else ds.ReceiptStatus.UNKNOWN
+    )
+    assert outcome.receipt_status is expected
+    assert outcome.receipt == ds.Receipt("retained", expected)
+    assert outcome.effect_id == "retained"
+    assert isinstance(outcome.__cause__, HTTPError)
+    assert len(state.received) == 1
+
+
+@pytest.mark.parametrize("committed", [True, False])
+def test_removed_declaration_is_recovered_only_by_explicit_lookup(
+    connect: tuple[Gateway, State],
+    committed: bool,
+) -> None:
+    gateway, state = connect
+    state.unknown = not committed
+    effect_id = "retained-effect"
+    if committed:
+        original = ds.invoke(
+            gateway, "org", "source", "create_invoice", {}, effect_id=effect_id
+        ).receipt
+    else:
+        with pytest.raises(ds.OutcomeUnknown) as unknown:
+            ds.invoke(
+                gateway, "org", "source", "create_invoice", {}, effect_id=effect_id
+            )
+        original = unknown.value.receipt
+    ds.declare_operations(gateway, "org", "source", [])
+    state.error = (400, _removed_error("committed" if committed else "unknown"))
+    with pytest.raises(ds.OperationDeclarationRemoved) as removed:
+        ds.invoke(gateway, "org", "source", "create_invoice", {}, effect_id=effect_id)
+    assert len(state.received) == 3  # No automatic lookup or reinvocation.
+    assert removed.value.receipt_status is original.status
+    state.error = None
+    recovered = ds.lookup(gateway, "org", "source", effect_id)
+    if committed:
+        assert recovered == original
+    else:
+        assert isinstance(recovered, ds.OutcomeUnknown)
+        assert recovered.receipt == original
+    assert [path.removeprefix(_SERVICE) for path, _, _ in state.received] == [
+        "InvokeSourceOperation",
+        "DeclareSourceOperations",
+        "InvokeSourceOperation",
+        "LookupInvokeSourceOperation",
+    ]
+    assert state.received[-1][1] == {"effect_id": effect_id}
+
+
 @pytest.mark.parametrize("status", [500, 502, 503, 504])
 @pytest.mark.parametrize(
     "body", [b"upstream request timeout", b"<html>upstream unavailable</html>"]
@@ -1044,18 +1208,17 @@ def test_error_mapper_accepts_bodyless_error() -> None:
     error.close()
 
 
-@pytest.mark.parametrize(
-    "message", ["source effect not found", "source operation not found"]
-)
-def test_lookup_not_found_preserves_host_ambiguity(
-    connect: tuple[Gateway, State], message: str
+def test_lookup_not_found_means_no_attempt(
+    connect: tuple[Gateway, State],
 ) -> None:
     gateway, state = connect
+    message = "source effect not found"
     state.error = (404, _error("not_found", message=message))
     outcome = ds.lookup(gateway, "org", "source", "effect-1")
     assert isinstance(outcome, ds.EffectNotFound)
     assert str(outcome) == message
     assert outcome.effect_id == "effect-1"
+    assert outcome.receipt.status is ds.ReceiptStatus.NOT_ATTEMPTED
     assert len(state.received) == 1
 
 

@@ -24,6 +24,7 @@ from saas_sdk._datasource_types import (
     EffectReused,
     InputError,
     NotPermitted,
+    OperationDeclarationRemoved,
     OperationRefused,
     OutcomeUnknown,
     ProviderRefused,
@@ -216,6 +217,15 @@ def map_error(
     if code == "failed_precondition":
         if info.reason == "SOURCE_OPERATION_OUTCOME_UNKNOWN" and effect_id is not None:
             return unknown(effect_id, message)
+        if info.reason == "SOURCE_OPERATION_DECLARATION_REMOVED":
+            receipt_status = (
+                ReceiptStatus.COMMITTED
+                if info.metadata.get("receipt_status") == "committed"
+                else ReceiptStatus.UNKNOWN
+            )
+            return OperationDeclarationRemoved(
+                message, receipt_status=receipt_status, effect_id=effect_id
+            )
         if info.reason == "SOURCE_EFFECT_REUSED":
             return EffectReused(message)
         if info.reason != "SOURCE_PROVIDER_REFUSED":

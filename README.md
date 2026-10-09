@@ -54,7 +54,7 @@ Packages:
 
 The call half uses the proto from
 [module-saas-starter PR #1052](https://github.com/codefly-dev/module-saas-starter/pull/1052),
-head `86ee51fd8b4d66aad9da2509483e14d3c7534764`, recorded in `SOURCE.txt`.
+head `2a16c688c61d66645e1063c495fa38eaf2fa52de`, recorded in `SOURCE.txt`.
 This is a development PR head, **not a released host tag**. Release waits for
 the accepted host tag: record its commit and regenerate before publishing.
 
@@ -146,6 +146,7 @@ Host Connect statuses map to the Go sibling's names:
 | `InvalidArgument` | raises `InputError`; a supplied `BadRequest.FieldViolation` sets `.pointer` |
 | `ResourceExhausted` + `ErrorInfo{DATASOURCE_RATE_LIMITED}` | raises `RateLimited`; `.reset_at` is the host's UTC reset time, or receipt time plus `RetryInfo.retry_delay` |
 | `FailedPrecondition` + `SOURCE_OPERATION_OUTCOME_UNKNOWN` | raises `OutcomeUnknown` on invoke; **returns** it on lookup |
+| `FailedPrecondition` + `SOURCE_OPERATION_DECLARATION_REMOVED` | raises `OperationDeclarationRemoved` on invoke, retaining `.receipt_status`, `.receipt` and `.effect_id`; recover with lookup |
 | `FailedPrecondition` + `SOURCE_PROVIDER_REFUSED` | raises `ProviderRefused`; `.status` is the explicit `ErrorInfo.metadata["provider_status"]` when valid |
 | `FailedPrecondition` + `SOURCE_EFFECT_REUSED` | raises `EffectReused` |
 | Other `FailedPrecondition` | raises `OperationRefused`, carrying `.reason` (empty when missing) |
@@ -159,14 +160,26 @@ host attempt. A refusal of this request does not establish the outcome of an
 earlier attempt under that ID.
 
 Unknown is **not failure**: the mutation may have happened. Look up the same ID
-and handle `Receipt | OutcomeUnknown | EffectNotFound` explicitly. A committed
-receipt carries `.output`, so recovery need not invoke again to read the result.
-An `EffectNotFound` permits an explicit **same-ID** invocation with the original
-input; the SDK never performs it automatically. Never create a new ID to recover
-a lost reply. At this host ref, an absent attempt and a removed declaration both
-produce lookup `NotFound` without a distinguishing reason. `NOT_ATTEMPTED`
-labels that lookup miss; it is not proof that the provider never acted. Other
-lookup failures still raise, including cancellation and deadline expiry.
+and handle `Receipt | OutcomeUnknown | EffectNotFound | OperationDeclarationRemoved`
+explicitly. A committed receipt carries `.output`, so recovery need not invoke
+again to read the result.
+An `EffectNotFound` means the host has no attempt marker and permits an explicit
+**same-ID** invocation with the original input; the SDK never performs it
+automatically. Never create a new ID to recover a lost reply. Lookup reads retained
+receipt evidence independently of the current declaration: removal or replacement
+cannot turn an existing attempt into `NotFound`. Current source read authority
+still applies. Other lookup failures still raise, including cancellation and
+deadline expiry.
+
+Re-invoking an existing effect after its declaration was removed raises
+`OperationDeclarationRemoved`. Its `.receipt_status` and `.receipt.status` are
+`COMMITTED` only when the host explicitly sends `receipt_status="committed"`;
+`"unknown"`, absent or unrecognized metadata produces `UNKNOWN`. The receipt
+retains the original effect ID, with no invented output, commit time or provider
+status. Recover that same ID through `lookup` to read the saved receipt or
+unresolved outcome. Never use a fresh ID as recovery; the SDK never retries.
+If the host sends this reason on lookup, the SDK returns
+`OperationDeclarationRemoved` as an outcome value instead of raising it.
 
 `ReceiptStatus` has `COMMITTED`, `UNKNOWN` and `NOT_ATTEMPTED`, matching Go.
 Only the first two are stored host receipt states. Absent commit time/provider

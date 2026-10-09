@@ -109,15 +109,38 @@ class OperationRefused(DatasourceError):
         self.reason = reason
 
 
+class OperationDeclarationRemoved(DatasourceError):
+    """The declaration was removed after an attempt; recover the original ID.
+
+    ``receipt_status`` carries retained evidence, not permission to retry with
+    a fresh ID. Use lookup for the saved output or unresolved outcome. Invoke
+    raises this type; lookup returns it if the host sends this reason there.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        receipt_status: ReceiptStatus,
+        effect_id: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.receipt_status = receipt_status
+        self.effect_id = effect_id
+        self.receipt = (
+            Receipt(effect_id, receipt_status) if effect_id is not None else None
+        )
+
+
 class EffectReused(DatasourceError):
     """The host rejected changed input under an existing effect ID."""
 
 
 class EffectNotFound(DatasourceError):
-    """Lookup found no accessible effect; same-ID recovery remains safe.
+    """Lookup found no attempt; an explicit same-ID invocation is safe.
 
-    NOT_ATTEMPTED labels the lookup miss. The pinned host also sends NotFound
-    when a declaration disappeared, so it is not proof of no prior action.
+    Returned by lookup with a NOT_ATTEMPTED receipt. Retained receipt evidence
+    survives declaration removal or replacement under current source authority.
     """
 
     effect_id: str

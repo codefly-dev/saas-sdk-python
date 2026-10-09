@@ -51,6 +51,7 @@ from saas_sdk._datasource_types import (
     InputError,
     NotPermitted,
     Operation,
+    OperationDeclarationRemoved,
     OperationRefused,
     OutcomeUnknown,
     ProviderRefused,
@@ -77,6 +78,7 @@ __all__ = [
     "InputError",
     "NotPermitted",
     "Operation",
+    "OperationDeclarationRemoved",
     "OperationGateway",
     "OperationRefused",
     "OutcomeUnknown",
@@ -276,7 +278,7 @@ class Client:
 
     def lookup(
         self, org_id: str, source_id: str, effect_id: str
-    ) -> Receipt | OutcomeUnknown | EffectNotFound:
+    ) -> Receipt | OutcomeUnknown | EffectNotFound | OperationDeclarationRemoved:
         """Read a receipt once. Unknown is a value, never raised here.
 
         org_id/source_id retain the Go facade's signature; the wire selector is
@@ -291,7 +293,7 @@ class Client:
                 effect_id=effect_id,
                 lookup=True,
             )
-        except (OutcomeUnknown, EffectNotFound) as outcome:
+        except (OutcomeUnknown, EffectNotFound, OperationDeclarationRemoved) as outcome:
             return outcome
         try:
             receipt = _receipt(response["receipt"])
@@ -356,7 +358,7 @@ def invoke(
 
 def lookup(
     gw: Gateway, org_id: str, source_id: str, effect_id: str
-) -> Receipt | OutcomeUnknown | EffectNotFound:
+) -> Receipt | OutcomeUnknown | EffectNotFound | OperationDeclarationRemoved:
     return new(gw).lookup(org_id, source_id, effect_id)
 
 
