@@ -32,6 +32,7 @@ import math
 import secrets
 import time
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import timezone
 from http.client import IncompleteRead
 from typing import Any, Protocol, TypeVar, cast
@@ -234,47 +235,21 @@ class Client:
             timeout = deadline - time.time()
             if not math.isfinite(deadline) or timeout <= 0:
                 raise InputError("deadline must be a finite future Unix timestamp")
-        try:
-            response = _rpc(
-                self._gateway,
-                "InvokeSourceOperation",
-                {
-                    "org_id": org_id,
-                    "source_id": source_id,
-                    "operation": operation,
-                    "input_json": input_json,
-                    "effect_id": effect_id,
-                },
-                effect_id=effect_id,
-                headers={"x-codefly-effect-id": effect_id},
-                timeout=timeout,
-            )
-        except (
-            TimeoutError,
-            ConnectionError,
-            IncompleteRead,
-            DecodeError,
-            URLError,
-        ) as error:
-            # HTTPError is a URLError too. _rpc already classifies HTTP replies;
-            # only an unmapped, recognized Connect error can remain here.
-            if isinstance(error, HTTPError):
-                raise
-            raise unknown(effect_id, str(error)) from error
-        try:
-            receipt = _receipt(response["receipt"])
-            output = _json_object(response.get("output_json", ""))
-        except (KeyError, TypeError, ValueError, OverflowError) as error:
-            raise unknown(
-                effect_id, "host returned a missing or invalid operation response"
-            ) from error
-        if receipt.effect_id != effect_id:
-            raise unknown(
-                effect_id, "host returned a receipt for a different effect ID"
-            )
-        if _is_unknown(receipt):
-            raise OutcomeUnknown("host has not resolved the effect", receipt=receipt)
-        return Result(output=output, receipt=receipt)
+        response = _rpc(
+            self._gateway,
+            "InvokeSourceOperation",
+            {
+                "org_id": org_id,
+                "source_id": source_id,
+                "operation": operation,
+                "input_json": input_json,
+                "effect_id": effect_id,
+            },
+            effect_id=effect_id,
+            headers={"x-codefly-effect-id": effect_id},
+            timeout=timeout,
+        )
+        return _operation_result(response, effect_id)
 
     def lookup(
         self, org_id: str, source_id: str, effect_id: str
@@ -293,21 +268,9 @@ class Client:
                 effect_id=effect_id,
                 lookup=True,
             )
+            return _operation_result(response, effect_id).receipt
         except (OutcomeUnknown, EffectNotFound, OperationDeclarationRemoved) as outcome:
             return outcome
-        try:
-            receipt = _receipt(response["receipt"])
-            if receipt.effect_id != effect_id:
-                raise ValueError("host returned a receipt for a different effect ID")
-        except (KeyError, TypeError, ValueError, OverflowError) as error:
-            failure = DatasourceError(
-                "host returned a missing or invalid lookup receipt"
-            )
-            failure.effect_id = effect_id
-            raise failure from error
-        if _is_unknown(receipt):
-            return OutcomeUnknown("host has not resolved the effect", receipt=receipt)
-        return receipt
 
     def declare_operations(
         self, org_id: str, source_id: str, operations: list[Operation]
@@ -433,10 +396,27 @@ def _rpc(
             if mapped is None:
                 if effect_id is not None:
                     raise unknown(effect_id, str(error)) from error
+                # Connect-Go infers PermissionDenied from non-wire HTTP 403.
+                # Declarations/listing have no effect outcome to preserve.
+                if (
+                    method in ("DeclareSourceOperations", "ListSourceOperations")
+                    and error.code == 403
+                ):
+                    raise NotPermitted(str(error)) from error
                 raise
             if mapped is error:
                 raise
             raise mapped from error
+        except (
+            TimeoutError,
+            ConnectionError,
+            IncompleteRead,
+            DecodeError,
+            URLError,
+        ) as error:
+            if effect_id is not None:
+                raise unknown(effect_id, str(error)) from error
+            raise
         return json_format.MessageToDict(response, preserving_proto_field_name=True)
     except Exception as error:
         # Go returns Result alongside every post-dispatch error. Python errors
@@ -453,6 +433,7 @@ def _rpc(
 
 
 def _receipt(value: dict[str, Any]) -> Receipt:
+    """Read receipt evidence before touching either output JSON field."""
     committed_at = None
     if value.get("committed_at"):
         timestamp = Timestamp()
@@ -464,18 +445,37 @@ def _receipt(value: dict[str, Any]) -> Receipt:
     if value["status"] not in statuses:
         raise ValueError("host returned an unsupported receipt status")
     status = statuses[value["status"]]
-    output = _json_object(value.get("output_json", ""))
     return Receipt(
         effect_id=value["effect_id"],
         status=status,
         committed_at=committed_at,
         provider_status=value.get("provider_status"),
-        output=output if status is ReceiptStatus.COMMITTED else None,
     )
 
 
-def _is_unknown(receipt: Receipt) -> bool:
-    return receipt.status is ReceiptStatus.UNKNOWN
+def _operation_result(response: dict[str, Any], effect_id: str) -> Result:
+    try:
+        receipt = _receipt(response["receipt"])
+        if receipt.effect_id != effect_id:
+            raise ValueError("host returned a receipt for a different effect ID")
+    except (KeyError, TypeError, ValueError, OverflowError) as error:
+        raise unknown(
+            effect_id, "host returned a missing or invalid operation receipt"
+        ) from error
+    if receipt.status is ReceiptStatus.UNKNOWN:
+        raise OutcomeUnknown("host has not resolved the effect", receipt=receipt)
+    try:
+        # The receipt's output is canonical for recovery. The response's output
+        # is separately validated and exposed on Result; neither overwrites it.
+        receipt = replace(
+            receipt, output=_json_object(response["receipt"].get("output_json", ""))
+        )
+        output = _json_object(response.get("output_json", ""))
+    except (KeyError, TypeError, ValueError, OverflowError) as error:
+        raise DatasourceError(
+            "host returned invalid committed operation output", receipt=receipt
+        ) from error
+    return Result(output=output, receipt=receipt)
 
 
 def _json_object(value: str) -> dict[str, Any]:
@@ -492,6 +492,10 @@ def _operation_fields(operation: Operation) -> dict[str, Any]:
     effects = {Effect.READ_ONLY: "EFFECT_READ_ONLY", Effect.MUTATION: "EFFECT_MUTATION"}
     if not isinstance(operation.effect, Effect):
         raise InputError("invalid operation effect")
+    if not isinstance(operation.input, dict):
+        raise InputError("input schema must be a JSON object")
+    if not isinstance(operation.output, dict):
+        raise InputError("output schema must be a JSON object")
     effect = effects[operation.effect]
     return {
         "name": operation.name,

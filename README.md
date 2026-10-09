@@ -145,13 +145,15 @@ Host Connect statuses map to the Go sibling's names:
 | `NotFound` during lookup | **returns** `EffectNotFound`, retaining the ID and a `NOT_ATTEMPTED` receipt |
 | `InvalidArgument` | raises `InputError`; a supplied `BadRequest.FieldViolation` sets `.pointer` |
 | `ResourceExhausted` + `ErrorInfo{DATASOURCE_RATE_LIMITED}` | raises `RateLimited`; `.reset_at` is the host's UTC reset time, or receipt time plus `RetryInfo.retry_delay` |
-| `FailedPrecondition` + `SOURCE_OPERATION_OUTCOME_UNKNOWN` | raises `OutcomeUnknown` on invoke; **returns** it on lookup |
+| `FailedPrecondition` + `SOURCE_OPERATION_OUTCOME_UNKNOWN` | raises `OutcomeUnknown` on invoke; **returns** it on lookup; declare/list raises `OperationRefused` with the reason |
 | `FailedPrecondition` + `SOURCE_OPERATION_DECLARATION_REMOVED` | raises `OperationDeclarationRemoved` on invoke, retaining `.receipt_status`, `.receipt` and `.effect_id`; recover with lookup |
 | `FailedPrecondition` + `SOURCE_PROVIDER_REFUSED` | raises `ProviderRefused`; `.status` is the explicit `ErrorInfo.metadata["provider_status"]` when valid |
 | `FailedPrecondition` + `SOURCE_EFFECT_REUSED` | raises `EffectReused` |
 | Other `FailedPrecondition` | raises `OperationRefused`, carrying `.reason` (empty when missing) |
 | `Unavailable`, `DeadlineExceeded`, `Canceled` during invocation, a lost reply, or a non-Connect HTTP error | raises `OutcomeUnknown`, retaining `.receipt` and `.effect_id` |
-| Lookup answers unknown, `Unavailable`, or a non-Connect HTTP error | **returns** `OutcomeUnknown`; it is not raised |
+| Lookup answers unknown, `Unavailable`, a non-Connect HTTP error, a lost/undecodable reply, or invalid receipt evidence | **returns** `OutcomeUnknown` with the original ID and receipt; it is not raised |
+| Committed receipt with invalid output | raises `DatasourceError` on invoke/lookup, retaining the COMMITTED `.receipt` and `.effect_id` |
+| Non-Connect HTTP 403 on declare/list | raises `NotPermitted`; other non-Connect HTTP codes retain the gateway error |
 
 Every dispatched invocation failure retains `.effect_id` and `.receipt`, even
 when the gateway exception has no SDK mapping. Typed failures inherit
@@ -163,6 +165,15 @@ Unknown is **not failure**: the mutation may have happened. Look up the same ID
 and handle `Receipt | OutcomeUnknown | EffectNotFound | OperationDeclarationRemoved`
 explicitly. A committed receipt carries `.output`, so recovery need not invoke
 again to read the result.
+`Receipt.output` comes from `receipt.output_json`; `Result.output` comes from
+the response's top-level `output_json`. The host sends identical objects, but
+the SDK preserves each field if they differ. A committed response requires both
+fields to contain one valid JSON object, including on lookup. If either is
+malformed or missing, `DatasourceError` retains the committed ID, time, provider
+status and any valid canonical receipt output. Missing or invalid receipt
+identity, status or time instead leaves the outcome unknown. An UNKNOWN receipt
+does not require valid output. None of these errors authorizes a fresh-ID retry.
+
 An `EffectNotFound` means the host has no attempt marker and permits an explicit
 **same-ID** invocation with the original input; the SDK never performs it
 automatically. Never create a new ID to recover a lost reply. Lookup reads retained
@@ -194,13 +205,17 @@ field violation is used; absent details leave the pointer empty.
 
 The host is the disclosure guard. Typed errors preserve its message verbatim,
 including credential-looking strings; the SDK does not redact or repair host
-disclosures. Non-Connect HTTP failures after dispatch, including every 4xx/5xx
+disclosures. Non-Connect HTTP failures after invoke/lookup dispatch, including every 4xx/5xx
 status, leave the effect outcome unknown: a proxy response cannot establish
 whether the host attempted the effect. Recognized Connect errors keep the typed
 mappings above; other recognized Connect codes propagate as the original gateway
 exception. As in Connect-Go, a decoded JSON error's declared code takes precedence
 over its HTTP status; a missing/unrecognized string code uses the Connect-Go
-HTTP fallback. Original HTTP error bodies remain readable through the exception
+HTTP fallback. UTF-8 charset spelling and gzip encoding are case-insensitive;
+a UTF-8 BOM before a JSON error is accepted. Unsupported content types/charsets
+or malformed envelopes are non-Connect errors. Declaration/list calls apply the
+HTTP fallback without inventing effect evidence: HTTP 403 becomes `NotPermitted`.
+Original HTTP error bodies remain readable through the exception
 or its `__cause__`. This diagnostic chain never authorizes a retry.
 
 The host's lookup wire request contains only `effect_id`; it resolves the stored
@@ -208,8 +223,18 @@ binding under the gateway's verified tenant. The public `org_id` and `source_id`
 arguments remain for Go facade parity and are not additional lookup selectors.
 Receipt status strings (`committed`, `unknown`) map to `ReceiptStatus`, and the
 host's RFC3339 commit-time string becomes a timezone-aware `datetime`.
+The host's timestamp profile has years 0001–9999 and at most nine fractional
+digits. Year zero and longer fractions cannot be emitted by its real-time
+formatter; Python's protobuf parser rejects them. An invalid `reset_at` falls
+back to `RetryInfo` or remains absent; an invalid receipt time yields
+`OutcomeUnknown`.
+
 `Operation.description` round-trips with the declaration; `Operation.digest`
 is read from the host's admitted declaration and ignored on declaration input.
+Declaration requires explicit `input` and `output` schema dictionaries. Omitted
+schemas default to `None` and raise `InputError` before dispatch, as do non-object
+schemas. An explicit `{}` is a supplied schema for host admission. Listing
+normalizes absent schemas to `{}`, so a listed operation can be re-declared.
 
 ## Work Context
 

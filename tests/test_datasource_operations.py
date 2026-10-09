@@ -14,7 +14,7 @@ import threading
 import time
 import urllib.request
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from email.message import Message as Headers
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -27,7 +27,7 @@ from uuid import UUID
 import pytest
 from google.protobuf import json_format, message_factory
 from google.protobuf.descriptor import FieldDescriptor
-from google.protobuf.message import Message
+from google.protobuf.message import DecodeError, Message
 from google.rpc.error_details_pb2 import BadRequest, ErrorInfo, RetryInfo
 
 from saas_sdk import datasource as ds
@@ -50,7 +50,7 @@ class State:
         default_factory=list
     )
     error: tuple[int, dict[str, Any]] | None = None
-    raw_error: tuple[int, bytes, str] | None = None
+    raw_error: tuple[int, bytes, str | None] | None = None
     error_content_encoding: str | None = None
     operations: list[dict[str, Any]] = field(default_factory=list)
     unknown: bool = False
@@ -163,9 +163,12 @@ def connect() -> Iterator[tuple[Gateway, State]]:
             )
             self._respond(200, response.SerializeToString(), "application/proto")
 
-        def _respond(self, status: int, payload: bytes, content_type: str) -> None:
+        def _respond(
+            self, status: int, payload: bytes, content_type: str | None
+        ) -> None:
             self.send_response(status)
-            self.send_header("content-type", content_type)
+            if content_type is not None:
+                self.send_header("content-type", content_type)
             if state.error_content_encoding is not None:
                 self.send_header("content-encoding", state.error_content_encoding)
             self.send_header("content-length", str(len(payload)))
@@ -728,9 +731,13 @@ def test_invalid_output_does_not_lose_effect_id(
 ) -> None:
     gateway, state = connect
     state.output_json = output
-    with pytest.raises(ds.OutcomeUnknown) as caught:
+    with pytest.raises(ds.DatasourceError) as caught:
         ds.invoke(gateway, "org", "source", "create_invoice", {})
+    assert type(caught.value) is ds.DatasourceError
     assert caught.value.effect_id == state.received[0][1]["effect_id"]
+    assert caught.value.receipt is not None
+    assert caught.value.receipt.status is ds.ReceiptStatus.COMMITTED
+    assert caught.value.receipt.output is None
     assert len(state.received) == 1
 
 
@@ -1079,6 +1086,8 @@ def test_operation_description_and_read_only_digest(
         ds.Effect.READ_ONLY,
         description="List invoices",
         digest="caller-digest-ignored",
+        input={},
+        output={},
     )
     ds.declare_operations(gateway, "org", "source", [operation])
     assert state.operations[0]["description"] == operation.description
@@ -1100,6 +1109,8 @@ def test_out_of_range_declaration_is_typed_before_dispatch(
         "/invoices",
         ds.Effect.READ_ONLY,
         max_output_bytes=max_output_bytes,
+        input={},
+        output={},
     )
     with pytest.raises(ds.InputError):
         ds.declare_operations(gateway, "org", "source", [operation])
@@ -1137,16 +1148,28 @@ def test_invalid_host_operation_effect_is_typed(
 
 @pytest.mark.parametrize(
     "receipt",
-    [None, {}, {"effect_id": "wrong", "status": "committed", "output_json": "{}"}],
+    [
+        None,
+        {},
+        {"effect_id": "wrong", "status": "committed", "output_json": "{}"},
+        {"effect_id": "effect-1", "status": "pending"},
+        {"effect_id": "effect-1", "status": "COMMITTED"},
+        {"effect_id": "effect-1"},
+        {"status": "committed", "output_json": "{}"},
+        {"effect_id": "effect-1", "status": "committed", "committed_at": "bad"},
+        {"effect_id": "effect-1", "status": "unknown", "output_json": ""},
+    ],
 )
-def test_invalid_lookup_receipt_is_typed(
+def test_invalid_lookup_receipt_is_unknown_with_original_id(
     connect: tuple[Gateway, State], receipt: dict[str, Any] | None
 ) -> None:
     gateway, state = connect
     state.response = {} if receipt is None else {"receipt": receipt}
-    with pytest.raises(ds.DatasourceError, match="invalid lookup receipt") as caught:
-        ds.lookup(gateway, "org", "source", "effect-1")
-    assert caught.value.effect_id == "effect-1"
+    outcome = ds.lookup(gateway, "org", "source", "effect-1")
+    assert isinstance(outcome, ds.OutcomeUnknown)
+    assert outcome.effect_id == "effect-1"
+    assert outcome.receipt == ds.Receipt("effect-1", ds.ReceiptStatus.UNKNOWN)
+    assert len(state.received) == 1
 
 
 def test_legacy_gateway_still_connects_but_cannot_invoke() -> None:
@@ -1479,3 +1502,287 @@ def test_gzip_http_errors_preserve_wire_classification(
     assert isinstance(caught.value.__cause__, HTTPError)
     assert caught.value.__cause__.read() == body
     assert len(state.received) == 1
+
+
+@pytest.mark.parametrize("broken_response", ["lost_reply", "non_proto"])
+def test_lookup_transport_loss_returns_unknown(
+    connect: tuple[Gateway, State],
+    broken_response: str,
+) -> None:
+    gateway, state = connect
+    if broken_response == "lost_reply":
+        state.lose_reply = True
+    else:
+        state.raw_error = (200, b"not a protobuf response", "application/proto")
+    outcome = ds.lookup(gateway, "org", "source", "effect-1")
+    assert isinstance(outcome, ds.OutcomeUnknown)
+    assert outcome.receipt == ds.Receipt("effect-1", ds.ReceiptStatus.UNKNOWN)
+    assert outcome.effect_id == "effect-1"
+    assert isinstance(outcome.__cause__, (ConnectionError, DecodeError))
+    assert len(state.received) == 1
+
+
+def _call_operation_surface(gateway: Gateway, method: str) -> Any:
+    if method == "invoke":
+        return ds.invoke(
+            gateway, "org", "source", "create_invoice", {}, effect_id="effect-1"
+        )
+    if method == "lookup":
+        return ds.lookup(gateway, "org", "source", "effect-1")
+    if method == "declare":
+        return ds.declare_operations(gateway, "org", "source", [])
+    assert method == "list"
+    return ds.list_operations(gateway, "org", "source")
+
+
+@pytest.mark.parametrize("method", ["invoke", "lookup"])
+@pytest.mark.parametrize("field", ["output_json", "receipt.output_json"])
+@pytest.mark.parametrize("output", [None, "", "[]", "nope", "{}{}", '{"a":NaN}'])
+def test_committed_bad_output_retains_receipt(
+    connect: tuple[Gateway, State],
+    method: str,
+    field: str,
+    output: str | None,
+) -> None:
+    gateway, state = connect
+    receipt: dict[str, Any] = {
+        "effect_id": "effect-1",
+        "status": "committed",
+        "committed_at": "2026-10-09T18:00:00Z",
+        "provider_status": 201,
+        "output_json": '{"receipt":true}',
+    }
+    response: dict[str, Any] = {"receipt": receipt, "output_json": '{"result":true}'}
+    target = receipt if field == "receipt.output_json" else response
+    if output is None:
+        del target["output_json"]
+    else:
+        target["output_json"] = output
+    state.response = response
+    with pytest.raises(ds.DatasourceError) as caught:
+        _call_operation_surface(gateway, method)
+    error = caught.value
+    assert type(error) is ds.DatasourceError
+    assert error.effect_id == "effect-1"
+    assert error.receipt == ds.Receipt(
+        "effect-1",
+        ds.ReceiptStatus.COMMITTED,
+        committed_at=datetime(2026, 10, 9, 18, tzinfo=timezone.utc),
+        provider_status=201,
+        output={"receipt": True} if field == "output_json" else None,
+    )
+    assert isinstance(error.__cause__, (ValueError, TypeError))
+    assert len(state.received) == 1
+
+
+@pytest.mark.parametrize("method", ["invoke", "lookup"])
+def test_receipt_output_is_canonical_and_result_output_is_separate(
+    connect: tuple[Gateway, State],
+    method: str,
+) -> None:
+    gateway, state = connect
+    state.response = {
+        "receipt": {
+            "effect_id": "effect-1",
+            "status": "committed",
+            "output_json": '{"receipt":9007199254740993}',
+        },
+        "output_json": '{"result":true}',
+    }
+    result = _call_operation_surface(gateway, method)
+    if method == "invoke":
+        assert isinstance(result, ds.Result)
+        assert result.output == {"result": True}
+        receipt = result.receipt
+    else:
+        assert isinstance(result, ds.Receipt)
+        receipt = result
+    assert receipt.output == {"receipt": 9007199254740993}
+    assert len(state.received) == 1
+
+
+@pytest.mark.parametrize("method", ["invoke", "lookup"])
+@pytest.mark.parametrize("output", [None, "", "[]", "not JSON"])
+def test_unknown_receipt_does_not_require_output(
+    connect: tuple[Gateway, State],
+    method: str,
+    output: str | None,
+) -> None:
+    gateway, state = connect
+    receipt = {"effect_id": "effect-1", "status": "unknown"}
+    state.response = {"receipt": receipt}
+    if output is not None:
+        receipt["output_json"] = output
+        state.response["output_json"] = output
+    if method == "invoke":
+        with pytest.raises(ds.OutcomeUnknown) as caught:
+            _call_operation_surface(gateway, method)
+        outcome = caught.value
+    else:
+        outcome = _call_operation_surface(gateway, method)
+        assert isinstance(outcome, ds.OutcomeUnknown)
+    assert outcome.receipt == ds.Receipt("effect-1", ds.ReceiptStatus.UNKNOWN)
+    assert len(state.received) == 1
+
+
+@pytest.mark.parametrize("method", ["declare", "list"])
+def test_management_unknown_reason_is_operation_refused(
+    connect: tuple[Gateway, State],
+    method: str,
+) -> None:
+    gateway, state = connect
+    reason = "SOURCE_OPERATION_OUTCOME_UNKNOWN"
+    state.error = (400, _error("failed_precondition", ErrorInfo(reason=reason)))
+    with pytest.raises(ds.OperationRefused) as caught:
+        _call_operation_surface(gateway, method)
+    assert caught.value.reason == reason
+    assert caught.value.receipt is None
+    assert caught.value.effect_id is None
+    assert len(state.received) == 1
+
+
+@pytest.mark.parametrize("method", ["declare", "list"])
+@pytest.mark.parametrize(
+    ("body", "content_type", "encoding"),
+    [
+        (b"proxy denied", "text/plain", None),
+        (b"<html>denied</html>", "text/html", None),
+        (b"", "text/plain", None),
+        (b"", None, None),
+        (b"proxy denied", None, None),
+        (gzip.compress(b"proxy denied"), "text/plain", "gzip"),
+        (b"corrupt gzip", "application/json", "gzip"),
+        (b'{"code":"permission_denied"}', "text/plain", None),
+        (b'{"code":"permission_denied"}', "application/json; charset=iso-8859-1", None),
+        (b'{"code":"permission_denied"}', "application/problem+json", None),
+        (b'{"code":"permission_denied"}', None, None),
+        (b'{"code":"permission_denied"}', "application/proto", None),
+        (b"[]", "application/json", None),
+        (b'{"code":42}', "application/json", None),
+        (b'{"code":"permission_denied"} garbage', "application/json", None),
+        (b'{"code":"permission_denied","message":42}', "application/json", None),
+        (b'{"code":"permission_denied"}', "application/json", "gzip"),
+        (b'{"details":{}}', "application/json", None),
+        (b'{"details":["bad"]}', "application/json", None),
+        (
+            b'{"details":[{"type":"google.rpc.ErrorInfo","value":"!"}]}',
+            "application/json",
+            None,
+        ),
+        (b"", "application/json", None),
+        (gzip.compress(b"proxy denied"), "application/json", "gzip"),
+    ],
+)
+def test_management_nonconnect_403_is_not_permitted(
+    connect: tuple[Gateway, State],
+    method: str,
+    body: bytes,
+    content_type: str | None,
+    encoding: str | None,
+) -> None:
+    gateway, state = connect
+    state.raw_error = (403, body, content_type)
+    state.error_content_encoding = encoding
+    with pytest.raises(ds.NotPermitted) as caught:
+        _call_operation_surface(gateway, method)
+    assert caught.value.effect_id is None
+    assert caught.value.receipt is None
+    assert isinstance(caught.value.__cause__, HTTPError)
+    assert caught.value.__cause__.read() == body
+    assert len(state.received) == 1
+
+
+@pytest.mark.parametrize("method", ["invoke", "lookup", "declare", "list"])
+@pytest.mark.parametrize("variant", ["charset", "bom", "gzip", "combined"])
+def test_connect_error_accepts_utf8_and_gzip_variants(
+    connect: tuple[Gateway, State],
+    method: str,
+    variant: str,
+) -> None:
+    gateway, state = connect
+    body = b'{"code":"permission_denied","message":"host denied"}'
+    if variant in ("bom", "combined"):
+        body = b"\xef\xbb\xbf" + body
+    if variant in ("gzip", "combined"):
+        body = gzip.compress(body)
+        state.error_content_encoding = "GZIP"
+    content_type = (
+        "application/json; charset=UTF-8"
+        if variant in ("charset", "combined")
+        else "application/json"
+    )
+    state.raw_error = (403, body, content_type)
+    with pytest.raises(ds.NotPermitted, match="host denied") as caught:
+        _call_operation_surface(gateway, method)
+    assert isinstance(caught.value.__cause__, HTTPError)
+    assert caught.value.__cause__.read() == body
+    assert len(state.received) == 1
+
+
+@pytest.mark.parametrize("method", ["invoke", "lookup", "declare", "list"])
+def test_nil_connect_details_do_not_hide_neighboring_reason(
+    connect: tuple[Gateway, State],
+    method: str,
+) -> None:
+    gateway, state = connect
+    payload = _error("failed_precondition")
+    payload["details"] = [
+        None,
+        _detail(ErrorInfo(reason="SOURCE_DECLARATION_CHANGED")),
+        None,
+    ]
+    state.error = (400, payload)
+    with pytest.raises(ds.OperationRefused) as caught:
+        _call_operation_surface(gateway, method)
+    assert caught.value.reason == "SOURCE_DECLARATION_CHANGED"
+    assert len(state.received) == 1
+
+
+@pytest.mark.parametrize("field", ["input", "output", "both"])
+@pytest.mark.parametrize("schema", [None, [], "{}", True])
+def test_omitted_or_nonobject_schemas_never_dispatch(
+    connect: tuple[Gateway, State],
+    field: str,
+    schema: Any,
+) -> None:
+    gateway, state = connect
+    operation = ds.Operation(
+        "read_item", "GET", "/items", ds.Effect.READ_ONLY, input={}, output={}
+    )
+    changes = {name: schema for name in ("input", "output") if field in (name, "both")}
+    operation = replace(operation, **changes)
+    with pytest.raises(ds.InputError, match="schema must be a JSON object") as caught:
+        ds.declare_operations(gateway, "org", "source", [operation])
+    assert caught.value.receipt is None
+    assert not state.received
+    assert not gateway.options
+
+
+def test_default_operation_requires_explicit_schemas(
+    connect: tuple[Gateway, State],
+) -> None:
+    gateway, state = connect
+    operation = ds.Operation("read_item", "GET", "/items", ds.Effect.READ_ONLY)
+    with pytest.raises(ds.InputError):
+        ds.declare_operations(gateway, "org", "source", [operation])
+    assert not state.received
+
+
+def test_list_absent_schemas_returns_redeclarable_empty_objects(
+    connect: tuple[Gateway, State],
+) -> None:
+    gateway, state = connect
+    state.operations = [
+        {
+            "name": "read_item",
+            "method": "GET",
+            "path": "/items",
+            "effect": "EFFECT_READ_ONLY",
+        }
+    ]
+    [operation] = ds.list_operations(gateway, "org", "source")
+    assert operation.input == operation.output == {}
+    ds.declare_operations(gateway, "org", "source", [operation])
+    assert state.received[1][1]["operations"][0]["input_schema"] == {}
+    assert state.received[1][1]["operations"][0]["output_schema"] == {}
+    assert len(state.received) == 2

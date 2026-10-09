@@ -21,15 +21,19 @@ class ReceiptStatus(str, Enum):
 
 @dataclass(frozen=True)
 class Operation:
-    """An admitted provider route; input/output are JSON Schema objects."""
+    """An admitted provider route; declaration requires both schema objects.
+
+    None marks an omitted schema; an explicit empty dict is a supplied schema.
+    List responses normalize omitted host schemas to empty dicts.
+    """
 
     name: str
     method: str
     path: str
     effect: Effect
     query: list[str] = field(default_factory=list)
-    input: dict[str, Any] = field(default_factory=dict)
-    output: dict[str, Any] = field(default_factory=dict)
+    input: dict[str, Any] | None = None
+    output: dict[str, Any] | None = None
     max_output_bytes: int = 0
     description: str = ""
     # Read from list_operations; the host computes this, so declaration ignores it.
@@ -59,10 +63,19 @@ class Result:
 
 
 class DatasourceError(Exception):
-    """A typed datasource failure; dispatched invokes retain recovery identity."""
+    """A typed failure retaining receipt evidence when available.
+
+    Malformed committed output preserves the COMMITTED receipt; it never
+    authorizes recovering an effect with a fresh ID.
+    """
 
     effect_id: str | None = None
     receipt: Receipt | None = None
+
+    def __init__(self, message: str, *, receipt: Receipt | None = None) -> None:
+        super().__init__(message)
+        self.receipt = receipt
+        self.effect_id = receipt.effect_id if receipt is not None else None
 
 
 class NotPermitted(DatasourceError):

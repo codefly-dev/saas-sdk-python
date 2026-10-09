@@ -46,3 +46,16 @@
   Missing or invalid metadata stays absent; never infer status from prose or
   the outer HTTP response. Test the host's concrete 403 refusal and `/id`
   `BadRequest.FieldViolation` shape, including its `SOURCE_INPUT_REFUSED` detail.
+- Return `OutcomeUnknown` with the original receipt/ID from lookup on transport
+  loss, an undecodable protobuf response or invalid receipt identity/status/time.
+- Preserve valid COMMITTED evidence in `DatasourceError` when either output JSON
+  field is invalid. `Receipt.output` uses `receipt.output_json`; `Result.output`
+  uses top-level `output_json`. Both fields validate on committed invoke/lookup.
+- Match management error mappings: non-Connect HTTP 403 on declare/list becomes
+  `NotPermitted`; their host unknown-outcome reason remains `OperationRefused`.
+  Pin accepted UTF-8 charset/BOM and case-insensitive gzip error envelopes.
+- Require explicit schema objects before declaring operations: omitted schemas
+  default to `None` and raise `InputError` without dispatch. Explicit `{}` remains
+  accepted; absent schemas in list responses become `{}`.
+- Document the host timestamp profile and Python's existing protobuf parser
+  limits, without changing timestamp parsing.
