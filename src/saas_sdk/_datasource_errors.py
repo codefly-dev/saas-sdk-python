@@ -108,18 +108,18 @@ def map_error(
     not authoritative. Unknown/invalid protobuf details never replace the host message;
     malformed JSON/base64 is a non-Connect response, matching Connect-Go.
     """
+    encoding = error.headers.get("content-encoding", "") if error.headers else ""
+    if encoding.lower() not in ("", "identity", "gzip"):
+        # Reject before reading: even a failed body read cannot authorize an
+        # HTTP status fallback. Leave the diagnostic stream untouched.
+        message = f"unsupported response encoding: {encoding}"
+        if effect_id is not None:
+            return unknown(effect_id, message)
+        return DatasourceError(message)
     try:
         body = _read_preserving_body(error)
-        encoding = error.headers.get("content-encoding", "") if error.headers else ""
         if encoding.lower() == "gzip":
             body = gzip.decompress(body)
-        elif encoding.lower() not in ("", "identity"):
-            # Connect rejects unknown encodings before decoding or inferring
-            # a status. Dispatch still leaves an effect's outcome unknown.
-            message = f"unsupported response encoding: {encoding}"
-            if effect_id is not None:
-                return unknown(effect_id, message)
-            return DatasourceError(message)
         payload = json.loads(body)
     except (ValueError, OSError, EOFError, zlib.error):
         return None

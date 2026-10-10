@@ -1747,6 +1747,32 @@ def test_unsupported_encoding_precedes_error_code_inference(
     assert len(state.received) == 1
 
 
+@pytest.mark.parametrize("effect_id", [None, "effect-1"])
+def test_unsupported_encoding_does_not_read_diagnostic_stream(
+    effect_id: str | None,
+) -> None:
+    class UnreadableBody(BytesIO):
+        def read(self, size: int | None = -1) -> bytes:
+            raise OSError("response body is unreadable")
+
+    headers = Headers()
+    headers["content-encoding"] = "br"
+    error = HTTPError("", 403, "Forbidden", headers, UnreadableBody())
+    try:
+        mapped = map_error(error, effect_id=effect_id)
+        if effect_id is None:
+            assert type(mapped) is ds.DatasourceError
+            assert mapped.receipt is None
+        else:
+            assert isinstance(mapped, ds.OutcomeUnknown)
+            assert mapped.receipt == ds.Receipt(effect_id, ds.ReceiptStatus.UNKNOWN)
+        # Mapping neither consumes nor replaces the original diagnostic stream.
+        with pytest.raises(OSError, match="response body is unreadable"):
+            error.read()
+    finally:
+        error.close()
+
+
 @pytest.mark.parametrize("method", ["invoke", "lookup", "declare", "list"])
 @pytest.mark.parametrize("variant", ["charset", "bom", "gzip", "combined"])
 def test_connect_error_accepts_utf8_and_gzip_variants(
