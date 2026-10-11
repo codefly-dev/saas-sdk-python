@@ -10,17 +10,17 @@
   host and return unknown lookup outcomes as values.
 - Document call options, receipt recovery and the host's disclosure boundary
   in `README.md`, with an executable `example.com` provider example.
-- Regenerate from host PR #1052 head
-  `2a16c688c61d66645e1063c495fa38eaf2fa52de`. Calls carry JSON objects in
+- Regenerate from released host tag `v0.0.94`. Calls carry JSON objects in
   `input_json`/`output_json` strings; lookup selects only the effect ID, and
   receipts decode the host's text status and RFC3339 commit time.
 - Include the host's `PruneSourceOperationReceipts` and its lookup in generated
   bindings only; runtime-scheduled retention has no caller facade.
 - Strip Runnable annotations in the generation pipeline alongside other
   custom options, keeping shared descriptors out of the SDK's generated tree.
-- The source ref is a development PR head; release still requires the host
-  tag. Runtime gateway support for Work Context, per-call headers and timeouts
-  remains a prerequisite for production calls. The release version is unchanged.
+- Record the released host tag in `SOURCE.txt`; CI regenerates from that tag.
+  Runtime gateway support for Work Context, per-call headers and timeouts remains
+  a prerequisite for production calls. The SDK is unreleased and its version
+  is unchanged.
 - Distinguish unknown mutation outcomes, provider refusals, effect reuse and
   other precondition reasons. Preserve effect IDs on every dispatched failure,
   including non-Connect HTTP errors, and keep raw error bodies readable.

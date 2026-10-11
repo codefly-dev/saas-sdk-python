@@ -52,11 +52,11 @@ Packages:
 
 ## Calling a connected source (unreleased)
 
-The call half uses the proto from
-[module-saas-starter PR #1052](https://github.com/codefly-dev/module-saas-starter/pull/1052),
-head `2a16c688c61d66645e1063c495fa38eaf2fa52de`, recorded in `SOURCE.txt`.
-This is a development PR head, **not a released host tag**. Release waits for
-the accepted host tag: record its commit and regenerate before publishing.
+The call half uses the proto from released host
+[module-saas-starter v0.0.94](https://github.com/codefly-dev/module-saas-starter/releases/tag/v0.0.94),
+recorded by tag in `SOURCE.txt` with its resolved commit for provenance.
+The bindings have been regenerated from that tag; this SDK surface remains
+unreleased.
 
 `datasource.invoke`, `lookup`, `declare_operations` and `list_operations` also
 exist on `datasource.new(gateway)`. The host holds the credential, admits the
@@ -391,13 +391,13 @@ That builds a descriptor image for the exposed protos, strips the custom options
 and shared-proto dependencies (`scripts/strip_options.py`), and regenerates
 `src/saas_sdk/_gen/*_pb2.py` and their `.pyi` files. **Never hand-edit `_gen/`.**
 
-For callable-source development, fetch the PR linked from host issue #1049,
-check out its exact head commit in a separate host checkout, run the command
-above, and record the full 40-character SHA in `SOURCE.txt`. The generated
-method gate and Connect tests must then pass against that real contract; there
-are no replacement fixture protos. Before release, replace the development ref
-with the accepted host tag's commit, regenerate again, and match the host module
-version.
+Fetch the desired published host tag into a separate host checkout, check out
+that tag, and run the command above. Record the release tag (currently
+`v0.0.94`) as the generation ref in `SOURCE.txt`, with its tag object and resolved
+commit as provenance. CI checks out the recorded tag and requires regeneration
+to match byte-for-byte. The generated method gate and Connect tests must pass
+against that contract; there are no replacement fixture protos. Match the host
+module version before publishing the SDK; regeneration alone does not release it.
 
 ## Consuming
 
