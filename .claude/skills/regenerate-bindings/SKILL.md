@@ -15,10 +15,10 @@ The protos live in `module-saas-starter` at
 `saas/accounts/v1/datasource.proto` and `saas/accounts/v1/work_contexts.proto`
 (the list is `protos=()` in `scripts/generate.sh`).
 
-The commit those bindings came from is recorded in `SOURCE.txt`. Read it before
-regenerating: if the proto change you need is not yet merged in
-`module-saas-starter`, that merge is the first pull request, not a local
-checkout regenerated against an unmerged branch.
+The published host tag those bindings came from is recorded in `SOURCE.txt`,
+alongside its tag object and resolved commit. Read it before regenerating:
+fetch and check out that tag in a separate `module-saas-starter` checkout.
+The generation ref is the tag name, not a branch or PR-head SHA.
 
 ## The walk
 
@@ -34,9 +34,11 @@ venv — activate the venv if the system interpreter lacks `protobuf`).
 
 Then, in the same pull request:
 
-1. Update `SOURCE.txt` — the `module-saas-starter` commit SHA, and the module
-   version if it moved. That version is also this SDK's release version in
-   `pyproject.toml`; the two are matched on purpose.
+1. Update `SOURCE.txt` — the `module-saas-starter` release tag, its tag object
+   and resolved commit, and the module version if it moved. CI regenerates
+   from the tag. The module version is also this SDK's release version in
+   `pyproject.toml`; the two are matched on purpose. Regeneration does not
+   publish a release.
 2. Run the suite: `python -m pytest -q`.
 3. If a new proto file is exposed, add it to `protos=()` in
    `scripts/generate.sh`, to the service list in `SOURCE.txt`, and to the

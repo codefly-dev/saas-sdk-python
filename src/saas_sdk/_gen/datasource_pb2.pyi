@@ -1,3 +1,5 @@
+from google.protobuf import duration_pb2 as _duration_pb2
+from google.protobuf import struct_pb2 as _struct_pb2
 from google.protobuf import timestamp_pb2 as _timestamp_pb2
 from saas_sdk._gen import jobs_pb2 as _jobs_pb2
 from google.protobuf.internal import containers as _containers
@@ -22,6 +24,13 @@ class DatasourceStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     DATASOURCE_STATUS_ACTIVE: _ClassVar[DatasourceStatus]
     DATASOURCE_STATUS_PAUSED: _ClassVar[DatasourceStatus]
     DATASOURCE_STATUS_DEGRADED: _ClassVar[DatasourceStatus]
+
+class DatasourceLiveDelivery(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    DATASOURCE_LIVE_DELIVERY_UNSPECIFIED: _ClassVar[DatasourceLiveDelivery]
+    DATASOURCE_LIVE_DELIVERY_NONE: _ClassVar[DatasourceLiveDelivery]
+    DATASOURCE_LIVE_DELIVERY_SOURCE_WEBHOOK: _ClassVar[DatasourceLiveDelivery]
+    DATASOURCE_LIVE_DELIVERY_APP_WEBHOOK: _ClassVar[DatasourceLiveDelivery]
 
 class ApiCredentialKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -109,6 +118,10 @@ DATASOURCE_STATUS_UNSPECIFIED: DatasourceStatus
 DATASOURCE_STATUS_ACTIVE: DatasourceStatus
 DATASOURCE_STATUS_PAUSED: DatasourceStatus
 DATASOURCE_STATUS_DEGRADED: DatasourceStatus
+DATASOURCE_LIVE_DELIVERY_UNSPECIFIED: DatasourceLiveDelivery
+DATASOURCE_LIVE_DELIVERY_NONE: DatasourceLiveDelivery
+DATASOURCE_LIVE_DELIVERY_SOURCE_WEBHOOK: DatasourceLiveDelivery
+DATASOURCE_LIVE_DELIVERY_APP_WEBHOOK: DatasourceLiveDelivery
 API_CREDENTIAL_KIND_UNSPECIFIED: ApiCredentialKind
 API_CREDENTIAL_KIND_BEARER: ApiCredentialKind
 API_CREDENTIAL_KIND_BASIC: ApiCredentialKind
@@ -174,14 +187,26 @@ class GitHubDatasourceConfig(_message.Message):
     def __init__(self, repo: _Optional[str] = ..., paths: _Optional[_Iterable[str]] = ..., branch: _Optional[str] = ..., file_extensions: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class ApiOAuth2Config(_message.Message):
-    __slots__ = ("token_url", "client_id", "scopes")
+    __slots__ = ("grant", "token_url", "client_id", "scopes")
+    class Grant(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+        __slots__ = ()
+        GRANT_UNSPECIFIED: _ClassVar[ApiOAuth2Config.Grant]
+        GRANT_REFRESH_TOKEN: _ClassVar[ApiOAuth2Config.Grant]
+        GRANT_CLIENT_CREDENTIALS: _ClassVar[ApiOAuth2Config.Grant]
+        GRANT_AUTHORIZATION_CODE: _ClassVar[ApiOAuth2Config.Grant]
+    GRANT_UNSPECIFIED: ApiOAuth2Config.Grant
+    GRANT_REFRESH_TOKEN: ApiOAuth2Config.Grant
+    GRANT_CLIENT_CREDENTIALS: ApiOAuth2Config.Grant
+    GRANT_AUTHORIZATION_CODE: ApiOAuth2Config.Grant
+    GRANT_FIELD_NUMBER: _ClassVar[int]
     TOKEN_URL_FIELD_NUMBER: _ClassVar[int]
     CLIENT_ID_FIELD_NUMBER: _ClassVar[int]
     SCOPES_FIELD_NUMBER: _ClassVar[int]
+    grant: ApiOAuth2Config.Grant
     token_url: str
     client_id: str
     scopes: _containers.RepeatedScalarFieldContainer[str]
-    def __init__(self, token_url: _Optional[str] = ..., client_id: _Optional[str] = ..., scopes: _Optional[_Iterable[str]] = ...) -> None: ...
+    def __init__(self, grant: _Optional[_Union[ApiOAuth2Config.Grant, str]] = ..., token_url: _Optional[str] = ..., client_id: _Optional[str] = ..., scopes: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class ApiDatasourceConfig(_message.Message):
     __slots__ = ("base_url", "resource_path", "credential_kind", "credential_header", "credential_query_param", "oauth2")
@@ -224,7 +249,7 @@ class UploadDatasourceConfig(_message.Message):
     def __init__(self, endpoint: _Optional[str] = ..., region: _Optional[str] = ..., bucket: _Optional[str] = ..., prefix: _Optional[str] = ..., access_key_id: _Optional[str] = ..., max_objects: _Optional[int] = ...) -> None: ...
 
 class Datasource(_message.Message):
-    __slots__ = ("id", "org_id", "provider", "github", "status", "webhook_configured", "created_at", "updated_at", "last_synced_at", "api", "crawler", "upload", "boundary_node_id", "last_ingested_at", "last_ingested_commit", "status_reason", "boundary_label", "conformant", "conformance_gap")
+    __slots__ = ("id", "org_id", "provider", "github", "status", "webhook_configured", "created_at", "updated_at", "last_synced_at", "api", "crawler", "upload", "boundary_node_id", "last_ingested_at", "last_ingested_commit", "status_reason", "boundary_label", "conformant", "conformance_gap", "live_delivery", "reconcile_interval")
     ID_FIELD_NUMBER: _ClassVar[int]
     ORG_ID_FIELD_NUMBER: _ClassVar[int]
     PROVIDER_FIELD_NUMBER: _ClassVar[int]
@@ -244,6 +269,8 @@ class Datasource(_message.Message):
     BOUNDARY_LABEL_FIELD_NUMBER: _ClassVar[int]
     CONFORMANT_FIELD_NUMBER: _ClassVar[int]
     CONFORMANCE_GAP_FIELD_NUMBER: _ClassVar[int]
+    LIVE_DELIVERY_FIELD_NUMBER: _ClassVar[int]
+    RECONCILE_INTERVAL_FIELD_NUMBER: _ClassVar[int]
     id: str
     org_id: str
     provider: DatasourceProvider
@@ -263,7 +290,9 @@ class Datasource(_message.Message):
     boundary_label: str
     conformant: bool
     conformance_gap: str
-    def __init__(self, id: _Optional[str] = ..., org_id: _Optional[str] = ..., provider: _Optional[_Union[DatasourceProvider, str]] = ..., github: _Optional[_Union[GitHubDatasourceConfig, _Mapping]] = ..., status: _Optional[_Union[DatasourceStatus, str]] = ..., webhook_configured: bool = ..., created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., last_synced_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., api: _Optional[_Union[ApiDatasourceConfig, _Mapping]] = ..., crawler: _Optional[_Union[CrawlerDatasourceConfig, _Mapping]] = ..., upload: _Optional[_Union[UploadDatasourceConfig, _Mapping]] = ..., boundary_node_id: _Optional[str] = ..., last_ingested_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., last_ingested_commit: _Optional[str] = ..., status_reason: _Optional[str] = ..., boundary_label: _Optional[str] = ..., conformant: bool = ..., conformance_gap: _Optional[str] = ...) -> None: ...
+    live_delivery: DatasourceLiveDelivery
+    reconcile_interval: _duration_pb2.Duration
+    def __init__(self, id: _Optional[str] = ..., org_id: _Optional[str] = ..., provider: _Optional[_Union[DatasourceProvider, str]] = ..., github: _Optional[_Union[GitHubDatasourceConfig, _Mapping]] = ..., status: _Optional[_Union[DatasourceStatus, str]] = ..., webhook_configured: bool = ..., created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., last_synced_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., api: _Optional[_Union[ApiDatasourceConfig, _Mapping]] = ..., crawler: _Optional[_Union[CrawlerDatasourceConfig, _Mapping]] = ..., upload: _Optional[_Union[UploadDatasourceConfig, _Mapping]] = ..., boundary_node_id: _Optional[str] = ..., last_ingested_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., last_ingested_commit: _Optional[str] = ..., status_reason: _Optional[str] = ..., boundary_label: _Optional[str] = ..., conformant: bool = ..., conformance_gap: _Optional[str] = ..., live_delivery: _Optional[_Union[DatasourceLiveDelivery, str]] = ..., reconcile_interval: _Optional[_Union[_duration_pb2.Duration, _Mapping]] = ...) -> None: ...
 
 class AddGitHubSourceRequest(_message.Message):
     __slots__ = ("org_id", "repo", "paths", "branch", "boundary_node_id", "collection_label", "access_token", "webhook_secret", "file_extensions")
@@ -354,7 +383,7 @@ class DatasourceConnectorBudget(_message.Message):
     def __init__(self, max_items_per_call: _Optional[int] = ..., max_bytes_per_call: _Optional[int] = ..., max_item_bytes: _Optional[int] = ..., operations_per_window: _Optional[int] = ..., window_seconds: _Optional[int] = ..., background_share_percent: _Optional[int] = ...) -> None: ...
 
 class DatasourceProviderDescriptor(_message.Message):
-    __slots__ = ("provider", "display_name", "description", "config_fields", "supports_webhook", "supported_credential_kinds", "connector", "interface", "credential_modes", "readers_model", "budget", "conformant", "conformance_gap", "accepts_new_sources")
+    __slots__ = ("provider", "display_name", "description", "config_fields", "supports_webhook", "supported_credential_kinds", "connector", "interface", "credential_modes", "readers_model", "budget", "conformant", "conformance_gap", "accepts_new_sources", "live_delivery_configured", "accepts_operations", "operations_gap", "oauth_authorize_url", "oauth_token_url", "oauth_scopes")
     PROVIDER_FIELD_NUMBER: _ClassVar[int]
     DISPLAY_NAME_FIELD_NUMBER: _ClassVar[int]
     DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
@@ -369,6 +398,12 @@ class DatasourceProviderDescriptor(_message.Message):
     CONFORMANT_FIELD_NUMBER: _ClassVar[int]
     CONFORMANCE_GAP_FIELD_NUMBER: _ClassVar[int]
     ACCEPTS_NEW_SOURCES_FIELD_NUMBER: _ClassVar[int]
+    LIVE_DELIVERY_CONFIGURED_FIELD_NUMBER: _ClassVar[int]
+    ACCEPTS_OPERATIONS_FIELD_NUMBER: _ClassVar[int]
+    OPERATIONS_GAP_FIELD_NUMBER: _ClassVar[int]
+    OAUTH_AUTHORIZE_URL_FIELD_NUMBER: _ClassVar[int]
+    OAUTH_TOKEN_URL_FIELD_NUMBER: _ClassVar[int]
+    OAUTH_SCOPES_FIELD_NUMBER: _ClassVar[int]
     provider: DatasourceProvider
     display_name: str
     description: str
@@ -383,7 +418,13 @@ class DatasourceProviderDescriptor(_message.Message):
     conformant: bool
     conformance_gap: str
     accepts_new_sources: bool
-    def __init__(self, provider: _Optional[_Union[DatasourceProvider, str]] = ..., display_name: _Optional[str] = ..., description: _Optional[str] = ..., config_fields: _Optional[_Iterable[_Union[DatasourceConfigField, _Mapping]]] = ..., supports_webhook: bool = ..., supported_credential_kinds: _Optional[_Iterable[_Union[ApiCredentialKind, str]]] = ..., connector: _Optional[str] = ..., interface: _Optional[_Union[DatasourceConnectorInterface, str]] = ..., credential_modes: _Optional[_Iterable[_Union[DatasourceCredentialMode, str]]] = ..., readers_model: _Optional[_Union[DatasourceReadersModel, str]] = ..., budget: _Optional[_Union[DatasourceConnectorBudget, _Mapping]] = ..., conformant: bool = ..., conformance_gap: _Optional[str] = ..., accepts_new_sources: bool = ...) -> None: ...
+    live_delivery_configured: bool
+    accepts_operations: bool
+    operations_gap: str
+    oauth_authorize_url: str
+    oauth_token_url: str
+    oauth_scopes: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, provider: _Optional[_Union[DatasourceProvider, str]] = ..., display_name: _Optional[str] = ..., description: _Optional[str] = ..., config_fields: _Optional[_Iterable[_Union[DatasourceConfigField, _Mapping]]] = ..., supports_webhook: bool = ..., supported_credential_kinds: _Optional[_Iterable[_Union[ApiCredentialKind, str]]] = ..., connector: _Optional[str] = ..., interface: _Optional[_Union[DatasourceConnectorInterface, str]] = ..., credential_modes: _Optional[_Iterable[_Union[DatasourceCredentialMode, str]]] = ..., readers_model: _Optional[_Union[DatasourceReadersModel, str]] = ..., budget: _Optional[_Union[DatasourceConnectorBudget, _Mapping]] = ..., conformant: bool = ..., conformance_gap: _Optional[str] = ..., accepts_new_sources: bool = ..., live_delivery_configured: bool = ..., accepts_operations: bool = ..., operations_gap: _Optional[str] = ..., oauth_authorize_url: _Optional[str] = ..., oauth_token_url: _Optional[str] = ..., oauth_scopes: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class GetDatasourceCatalogRequest(_message.Message):
     __slots__ = ()
@@ -422,14 +463,16 @@ class GetSourceResponse(_message.Message):
     def __init__(self, datasource: _Optional[_Union[Datasource, _Mapping]] = ...) -> None: ...
 
 class SyncSourceRequest(_message.Message):
-    __slots__ = ("org_id", "id", "access_token")
+    __slots__ = ("org_id", "id", "access_token", "reconnect")
     ORG_ID_FIELD_NUMBER: _ClassVar[int]
     ID_FIELD_NUMBER: _ClassVar[int]
     ACCESS_TOKEN_FIELD_NUMBER: _ClassVar[int]
+    RECONNECT_FIELD_NUMBER: _ClassVar[int]
     org_id: str
     id: str
     access_token: str
-    def __init__(self, org_id: _Optional[str] = ..., id: _Optional[str] = ..., access_token: _Optional[str] = ...) -> None: ...
+    reconnect: bool
+    def __init__(self, org_id: _Optional[str] = ..., id: _Optional[str] = ..., access_token: _Optional[str] = ..., reconnect: bool = ...) -> None: ...
 
 class SyncSourceResponse(_message.Message):
     __slots__ = ("job_id",)
@@ -664,14 +707,16 @@ class DatasourceDirectoryTeam(_message.Message):
     def __init__(self, id: _Optional[str] = ..., name: _Optional[str] = ...) -> None: ...
 
 class BeginDatasourceAccountLinkRequest(_message.Message):
-    __slots__ = ("org_id", "connector", "redirect_uri")
+    __slots__ = ("org_id", "connector", "redirect_uri", "source_id")
     ORG_ID_FIELD_NUMBER: _ClassVar[int]
     CONNECTOR_FIELD_NUMBER: _ClassVar[int]
     REDIRECT_URI_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_ID_FIELD_NUMBER: _ClassVar[int]
     org_id: str
     connector: str
     redirect_uri: str
-    def __init__(self, org_id: _Optional[str] = ..., connector: _Optional[str] = ..., redirect_uri: _Optional[str] = ...) -> None: ...
+    source_id: str
+    def __init__(self, org_id: _Optional[str] = ..., connector: _Optional[str] = ..., redirect_uri: _Optional[str] = ..., source_id: _Optional[str] = ...) -> None: ...
 
 class BeginDatasourceAccountLinkResponse(_message.Message):
     __slots__ = ("authorize_url", "state", "expires_at")
@@ -862,3 +907,133 @@ class RevokeSourceDelegationResponse(_message.Message):
     DELEGATION_FIELD_NUMBER: _ClassVar[int]
     delegation: SourceDelegation
     def __init__(self, delegation: _Optional[_Union[SourceDelegation, _Mapping]] = ...) -> None: ...
+
+class SourceOperation(_message.Message):
+    __slots__ = ("name", "description", "method", "path", "query", "input_schema", "output_schema", "effect", "max_output_bytes", "digest")
+    class Effect(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+        __slots__ = ()
+        EFFECT_UNSPECIFIED: _ClassVar[SourceOperation.Effect]
+        EFFECT_READ_ONLY: _ClassVar[SourceOperation.Effect]
+        EFFECT_MUTATION: _ClassVar[SourceOperation.Effect]
+    EFFECT_UNSPECIFIED: SourceOperation.Effect
+    EFFECT_READ_ONLY: SourceOperation.Effect
+    EFFECT_MUTATION: SourceOperation.Effect
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    METHOD_FIELD_NUMBER: _ClassVar[int]
+    PATH_FIELD_NUMBER: _ClassVar[int]
+    QUERY_FIELD_NUMBER: _ClassVar[int]
+    INPUT_SCHEMA_FIELD_NUMBER: _ClassVar[int]
+    OUTPUT_SCHEMA_FIELD_NUMBER: _ClassVar[int]
+    EFFECT_FIELD_NUMBER: _ClassVar[int]
+    MAX_OUTPUT_BYTES_FIELD_NUMBER: _ClassVar[int]
+    DIGEST_FIELD_NUMBER: _ClassVar[int]
+    name: str
+    description: str
+    method: str
+    path: str
+    query: _containers.RepeatedScalarFieldContainer[str]
+    input_schema: _struct_pb2.Struct
+    output_schema: _struct_pb2.Struct
+    effect: SourceOperation.Effect
+    max_output_bytes: int
+    digest: str
+    def __init__(self, name: _Optional[str] = ..., description: _Optional[str] = ..., method: _Optional[str] = ..., path: _Optional[str] = ..., query: _Optional[_Iterable[str]] = ..., input_schema: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., output_schema: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., effect: _Optional[_Union[SourceOperation.Effect, str]] = ..., max_output_bytes: _Optional[int] = ..., digest: _Optional[str] = ...) -> None: ...
+
+class DeclareSourceOperationsRequest(_message.Message):
+    __slots__ = ("org_id", "source_id", "operations")
+    ORG_ID_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_ID_FIELD_NUMBER: _ClassVar[int]
+    OPERATIONS_FIELD_NUMBER: _ClassVar[int]
+    org_id: str
+    source_id: str
+    operations: _containers.RepeatedCompositeFieldContainer[SourceOperation]
+    def __init__(self, org_id: _Optional[str] = ..., source_id: _Optional[str] = ..., operations: _Optional[_Iterable[_Union[SourceOperation, _Mapping]]] = ...) -> None: ...
+
+class DeclareSourceOperationsResponse(_message.Message):
+    __slots__ = ("operations",)
+    OPERATIONS_FIELD_NUMBER: _ClassVar[int]
+    operations: _containers.RepeatedCompositeFieldContainer[SourceOperation]
+    def __init__(self, operations: _Optional[_Iterable[_Union[SourceOperation, _Mapping]]] = ...) -> None: ...
+
+class ListSourceOperationsRequest(_message.Message):
+    __slots__ = ("org_id", "source_id")
+    ORG_ID_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_ID_FIELD_NUMBER: _ClassVar[int]
+    org_id: str
+    source_id: str
+    def __init__(self, org_id: _Optional[str] = ..., source_id: _Optional[str] = ...) -> None: ...
+
+class ListSourceOperationsResponse(_message.Message):
+    __slots__ = ("operations",)
+    OPERATIONS_FIELD_NUMBER: _ClassVar[int]
+    operations: _containers.RepeatedCompositeFieldContainer[SourceOperation]
+    def __init__(self, operations: _Optional[_Iterable[_Union[SourceOperation, _Mapping]]] = ...) -> None: ...
+
+class InvokeSourceOperationRequest(_message.Message):
+    __slots__ = ("org_id", "source_id", "operation", "input_json", "effect_id")
+    ORG_ID_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_ID_FIELD_NUMBER: _ClassVar[int]
+    OPERATION_FIELD_NUMBER: _ClassVar[int]
+    INPUT_JSON_FIELD_NUMBER: _ClassVar[int]
+    EFFECT_ID_FIELD_NUMBER: _ClassVar[int]
+    org_id: str
+    source_id: str
+    operation: str
+    input_json: str
+    effect_id: str
+    def __init__(self, org_id: _Optional[str] = ..., source_id: _Optional[str] = ..., operation: _Optional[str] = ..., input_json: _Optional[str] = ..., effect_id: _Optional[str] = ...) -> None: ...
+
+class SourceOperationReceipt(_message.Message):
+    __slots__ = ("effect_id", "committed_at", "status", "provider_status", "output_json")
+    EFFECT_ID_FIELD_NUMBER: _ClassVar[int]
+    COMMITTED_AT_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    PROVIDER_STATUS_FIELD_NUMBER: _ClassVar[int]
+    OUTPUT_JSON_FIELD_NUMBER: _ClassVar[int]
+    effect_id: str
+    committed_at: str
+    status: str
+    provider_status: int
+    output_json: str
+    def __init__(self, effect_id: _Optional[str] = ..., committed_at: _Optional[str] = ..., status: _Optional[str] = ..., provider_status: _Optional[int] = ..., output_json: _Optional[str] = ...) -> None: ...
+
+class InvokeSourceOperationResponse(_message.Message):
+    __slots__ = ("output_json", "receipt")
+    OUTPUT_JSON_FIELD_NUMBER: _ClassVar[int]
+    RECEIPT_FIELD_NUMBER: _ClassVar[int]
+    output_json: str
+    receipt: SourceOperationReceipt
+    def __init__(self, output_json: _Optional[str] = ..., receipt: _Optional[_Union[SourceOperationReceipt, _Mapping]] = ...) -> None: ...
+
+class LookupInvokeSourceOperationRequest(_message.Message):
+    __slots__ = ("effect_id",)
+    EFFECT_ID_FIELD_NUMBER: _ClassVar[int]
+    effect_id: str
+    def __init__(self, effect_id: _Optional[str] = ...) -> None: ...
+
+class PruneSourceOperationReceiptsRequest(_message.Message):
+    __slots__ = ("org_id", "source_id", "effect_id")
+    ORG_ID_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_ID_FIELD_NUMBER: _ClassVar[int]
+    EFFECT_ID_FIELD_NUMBER: _ClassVar[int]
+    org_id: str
+    source_id: str
+    effect_id: str
+    def __init__(self, org_id: _Optional[str] = ..., source_id: _Optional[str] = ..., effect_id: _Optional[str] = ...) -> None: ...
+
+class PruneSourceOperationReceiptsResponse(_message.Message):
+    __slots__ = ("effect_id", "receipts", "status")
+    EFFECT_ID_FIELD_NUMBER: _ClassVar[int]
+    RECEIPTS_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    effect_id: str
+    receipts: int
+    status: str
+    def __init__(self, effect_id: _Optional[str] = ..., receipts: _Optional[int] = ..., status: _Optional[str] = ...) -> None: ...
+
+class LookupPruneSourceOperationReceiptsRequest(_message.Message):
+    __slots__ = ("effect_id",)
+    EFFECT_ID_FIELD_NUMBER: _ClassVar[int]
+    effect_id: str
+    def __init__(self, effect_id: _Optional[str] = ...) -> None: ...

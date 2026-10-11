@@ -5,8 +5,8 @@
 #
 # The bindings deliberately embed only the accounts protos this SDK exposes: the
 # custom options (buf.validate, saas.policy) and their shared descriptors, plus
-# the google.api HTTP annotations, are stripped, so this SDK never registers a
-# shared proto into the global descriptor pool (which would collide with a
+# the google.api HTTP and codefly.runnable annotations, are stripped, so this SDK
+# never registers a shared proto into the global descriptor pool (which would collide with a
 # sibling saas SDK). The google.protobuf well-known types stay runtime types.
 # See scripts/strip_options.py.
 set -euo pipefail

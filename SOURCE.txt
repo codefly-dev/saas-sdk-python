@@ -1,5 +1,8 @@
-src/saas_sdk/_gen generated from codefly-dev/module-saas-starter@c201081235a61da83500db4c30a8bbec7d391e1a
+src/saas_sdk/_gen generated from codefly-dev/module-saas-starter@v0.0.94
 (accounts public proto: module/services/accounts/proto)
+Release tag: https://github.com/codefly-dev/module-saas-starter/releases/tag/v0.0.94
+Annotated tag object: 68f3fd38c721724166ee37e1f5ca75441fd76661
+Resolved commit: 9f6a4aa26edcbcb4d76cf4ffb47f71010e94f4eb
 services:
   saas.accounts.v1.DatasourceService (datasource.proto)
   saas.accounts.v1.WorkContextService (work_contexts.proto)

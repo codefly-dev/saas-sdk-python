@@ -26,4 +26,4 @@ def test_sync_state_round_trips_through_the_wire():
 def test_the_generated_files_register_no_shared_option_protos():
     for module in (datasource_pb2, jobs_pb2, work_contexts_pb2):
         deps = [d.name for d in module.DESCRIPTOR.dependencies]
-        assert not any(d.startswith(("buf/validate/", "saas/policy/", "google/api/")) for d in deps), deps
+        assert not any(d.startswith(("buf/validate/", "saas/policy/", "google/api/", "codefly/runnable/")) for d in deps), deps
