@@ -9,6 +9,23 @@ Everything ships under a single top-level package, `saas_sdk`, so installing it
 never claims a generic name (`saas`, `buf`, `datasource`) in the consumer's
 import namespace.
 
+Current Core Work Contexts are verified through `saas_sdk.verification.Client`
+on Codefly's resolved `accounts/authority` endpoint. Construct it with the
+callee's trusted issuer and audience and an async internal-credential callback;
+`await client.verify(token)` returns request-local identity and effective scopes.
+Apply resource policy locally and call `await client.recheck(result)` at each
+live-authority checkpoint. Close the client with `await client.aclose()`.
+The host checks the opaque credential through Core, including live installation,
+epoch, execution and binding state. Only idempotent credentials are accepted.
+The three-second budget includes credential refresh and the RPC. Authority
+outages return `AuthorityUnavailable`; invalid credentials and denied authority
+are distinct. No failure yields an identity. Tokens and results must not be logged
+or persisted. `work_context.Verifier` and the JWKS helpers also parse Core
+protobuf capabilities and verify their signatures, but do not establish the live
+installation and binding state checked by the host port. Existing users of
+those helpers retain their interface; composed callees requiring live authority
+use the host verification client.
+
 Packages:
 
 - **`saas_sdk._gen`** — private; consumers reach these types through the facades
@@ -253,13 +270,11 @@ solution needs: the **mint-side** client to the accounts authority, and the
 **callee-side** verifier. Only the *signer* itself stays authority-side in
 [`sdk-go`](https://github.com/codefly-dev/sdk-go).
 
-The wire format is **not a JWT**. A token is
-`base64url(JSON payload).base64url(Ed25519 sig)`, the payload is a fixed
-snake_case JSON object, and `key_id` lives *inside* the payload. Field order,
-`uint64`-as-decimal-string encoding, scope canonicalization, base64url, and
-Ed25519 signing are pinned byte-for-byte to `sdk-go`: the wire golden in
-`tests/fixtures/work_context_wire_golden.json` is byte-identical to sdk-go's
-`TestWorkContextWireGolden`, and CI in both repos verifies the same token.
+The wire format is **not a JWT**. A token carries a Core `WorkContextV1`
+protobuf payload and an Ed25519 signature. Core owns its canonical encoding;
+the SDK's wire fixture tests the parser against an authentic Core capability.
+Signature verification alone does not establish current authority: the host
+verification client above checks live state through the owning authority.
 
 ### Minting (delegated caller)
 
@@ -272,7 +287,7 @@ from saas_sdk import work_context
 
 wc = work_context.new(gateway)
 parent = wc.start_task(
-    bearer=user_bearer, org_id=org, task_id=task, session_id=session,
+    bearer=user_bearer, org_id=org, task_id=task,
     audience="accounts",
     scopes=[work_context.WorkContextScope(resource_kind="evidence", actions=["read"])],
 )

@@ -28,10 +28,9 @@ class WorkContextScope(_message.Message):
     def __init__(self, resource_kind: _Optional[str] = ..., actions: _Optional[_Iterable[str]] = ..., resource_ids: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class StartTaskWorkContextRequest(_message.Message):
-    __slots__ = ("org_id", "task_id", "session_id", "actor_principal_id", "authority_scopes", "audience", "replay_policy", "ttl_seconds", "workspace_id", "project_id")
+    __slots__ = ("org_id", "task_id", "actor_principal_id", "authority_scopes", "audience", "replay_policy", "ttl_seconds", "workspace_id", "project_id")
     ORG_ID_FIELD_NUMBER: _ClassVar[int]
     TASK_ID_FIELD_NUMBER: _ClassVar[int]
-    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
     ACTOR_PRINCIPAL_ID_FIELD_NUMBER: _ClassVar[int]
     AUTHORITY_SCOPES_FIELD_NUMBER: _ClassVar[int]
     AUDIENCE_FIELD_NUMBER: _ClassVar[int]
@@ -41,7 +40,6 @@ class StartTaskWorkContextRequest(_message.Message):
     PROJECT_ID_FIELD_NUMBER: _ClassVar[int]
     org_id: str
     task_id: str
-    session_id: str
     actor_principal_id: str
     authority_scopes: _containers.RepeatedCompositeFieldContainer[WorkContextScope]
     audience: str
@@ -49,14 +47,13 @@ class StartTaskWorkContextRequest(_message.Message):
     ttl_seconds: int
     workspace_id: str
     project_id: str
-    def __init__(self, org_id: _Optional[str] = ..., task_id: _Optional[str] = ..., session_id: _Optional[str] = ..., actor_principal_id: _Optional[str] = ..., authority_scopes: _Optional[_Iterable[_Union[WorkContextScope, _Mapping]]] = ..., audience: _Optional[str] = ..., replay_policy: _Optional[_Union[WorkContextReplayPolicy, str]] = ..., ttl_seconds: _Optional[int] = ..., workspace_id: _Optional[str] = ..., project_id: _Optional[str] = ...) -> None: ...
+    def __init__(self, org_id: _Optional[str] = ..., task_id: _Optional[str] = ..., actor_principal_id: _Optional[str] = ..., authority_scopes: _Optional[_Iterable[_Union[WorkContextScope, _Mapping]]] = ..., audience: _Optional[str] = ..., replay_policy: _Optional[_Union[WorkContextReplayPolicy, str]] = ..., ttl_seconds: _Optional[int] = ..., workspace_id: _Optional[str] = ..., project_id: _Optional[str] = ...) -> None: ...
 
 class StartInstallationTaskRequest(_message.Message):
-    __slots__ = ("org_id", "installation_id", "task_id", "session_id", "authority_scopes", "audience", "replay_policy", "ttl_seconds", "workspace_id", "project_id")
+    __slots__ = ("org_id", "installation_id", "task_id", "authority_scopes", "audience", "replay_policy", "ttl_seconds", "workspace_id", "project_id")
     ORG_ID_FIELD_NUMBER: _ClassVar[int]
     INSTALLATION_ID_FIELD_NUMBER: _ClassVar[int]
     TASK_ID_FIELD_NUMBER: _ClassVar[int]
-    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
     AUTHORITY_SCOPES_FIELD_NUMBER: _ClassVar[int]
     AUDIENCE_FIELD_NUMBER: _ClassVar[int]
     REPLAY_POLICY_FIELD_NUMBER: _ClassVar[int]
@@ -66,14 +63,13 @@ class StartInstallationTaskRequest(_message.Message):
     org_id: str
     installation_id: str
     task_id: str
-    session_id: str
     authority_scopes: _containers.RepeatedCompositeFieldContainer[WorkContextScope]
     audience: str
     replay_policy: WorkContextReplayPolicy
     ttl_seconds: int
     workspace_id: str
     project_id: str
-    def __init__(self, org_id: _Optional[str] = ..., installation_id: _Optional[str] = ..., task_id: _Optional[str] = ..., session_id: _Optional[str] = ..., authority_scopes: _Optional[_Iterable[_Union[WorkContextScope, _Mapping]]] = ..., audience: _Optional[str] = ..., replay_policy: _Optional[_Union[WorkContextReplayPolicy, str]] = ..., ttl_seconds: _Optional[int] = ..., workspace_id: _Optional[str] = ..., project_id: _Optional[str] = ...) -> None: ...
+    def __init__(self, org_id: _Optional[str] = ..., installation_id: _Optional[str] = ..., task_id: _Optional[str] = ..., authority_scopes: _Optional[_Iterable[_Union[WorkContextScope, _Mapping]]] = ..., audience: _Optional[str] = ..., replay_policy: _Optional[_Union[WorkContextReplayPolicy, str]] = ..., ttl_seconds: _Optional[int] = ..., workspace_id: _Optional[str] = ..., project_id: _Optional[str] = ...) -> None: ...
 
 class StartRootSessionWorkContextRequest(_message.Message):
     __slots__ = ("org_id", "parent_work_context_token", "session_id", "audience", "replay_policy", "ttl_seconds")
@@ -108,10 +104,9 @@ class ExchangeWorkContextAudienceRequest(_message.Message):
     def __init__(self, org_id: _Optional[str] = ..., parent_work_context_token: _Optional[str] = ..., audience: _Optional[str] = ..., attenuated_scopes: _Optional[_Iterable[_Union[WorkContextScope, _Mapping]]] = ..., replay_policy: _Optional[_Union[WorkContextReplayPolicy, str]] = ..., ttl_seconds: _Optional[int] = ...) -> None: ...
 
 class StartChildSessionWorkContextRequest(_message.Message):
-    __slots__ = ("org_id", "parent_work_context_token", "session_id", "actor_principal_id", "granted_scopes", "audience", "replay_policy", "ttl_seconds")
+    __slots__ = ("org_id", "parent_work_context_token", "actor_principal_id", "granted_scopes", "audience", "replay_policy", "ttl_seconds")
     ORG_ID_FIELD_NUMBER: _ClassVar[int]
     PARENT_WORK_CONTEXT_TOKEN_FIELD_NUMBER: _ClassVar[int]
-    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
     ACTOR_PRINCIPAL_ID_FIELD_NUMBER: _ClassVar[int]
     GRANTED_SCOPES_FIELD_NUMBER: _ClassVar[int]
     AUDIENCE_FIELD_NUMBER: _ClassVar[int]
@@ -119,13 +114,12 @@ class StartChildSessionWorkContextRequest(_message.Message):
     TTL_SECONDS_FIELD_NUMBER: _ClassVar[int]
     org_id: str
     parent_work_context_token: str
-    session_id: str
     actor_principal_id: str
     granted_scopes: _containers.RepeatedCompositeFieldContainer[WorkContextScope]
     audience: str
     replay_policy: WorkContextReplayPolicy
     ttl_seconds: int
-    def __init__(self, org_id: _Optional[str] = ..., parent_work_context_token: _Optional[str] = ..., session_id: _Optional[str] = ..., actor_principal_id: _Optional[str] = ..., granted_scopes: _Optional[_Iterable[_Union[WorkContextScope, _Mapping]]] = ..., audience: _Optional[str] = ..., replay_policy: _Optional[_Union[WorkContextReplayPolicy, str]] = ..., ttl_seconds: _Optional[int] = ...) -> None: ...
+    def __init__(self, org_id: _Optional[str] = ..., parent_work_context_token: _Optional[str] = ..., actor_principal_id: _Optional[str] = ..., granted_scopes: _Optional[_Iterable[_Union[WorkContextScope, _Mapping]]] = ..., audience: _Optional[str] = ..., replay_policy: _Optional[_Union[WorkContextReplayPolicy, str]] = ..., ttl_seconds: _Optional[int] = ...) -> None: ...
 
 class RenewWorkContextRequest(_message.Message):
     __slots__ = ("org_id", "parent_work_context_token", "audience", "attenuated_scopes", "replay_policy", "ttl_seconds")
@@ -178,16 +172,20 @@ class WorkContextRevisionSubject(_message.Message):
     def __init__(self, principal_id: _Optional[str] = ..., scopes: _Optional[_Iterable[_Union[WorkContextScope, _Mapping]]] = ...) -> None: ...
 
 class CheckAuthorizationRevisionRequest(_message.Message):
-    __slots__ = ("org_id", "owner_principal_id", "authorization_revision", "subjects")
+    __slots__ = ("org_id", "owner_principal_id", "authorization_revision", "subjects", "operation_binding_id", "seals_no_binding")
     ORG_ID_FIELD_NUMBER: _ClassVar[int]
     OWNER_PRINCIPAL_ID_FIELD_NUMBER: _ClassVar[int]
     AUTHORIZATION_REVISION_FIELD_NUMBER: _ClassVar[int]
     SUBJECTS_FIELD_NUMBER: _ClassVar[int]
+    OPERATION_BINDING_ID_FIELD_NUMBER: _ClassVar[int]
+    SEALS_NO_BINDING_FIELD_NUMBER: _ClassVar[int]
     org_id: str
     owner_principal_id: str
     authorization_revision: int
     subjects: _containers.RepeatedCompositeFieldContainer[WorkContextRevisionSubject]
-    def __init__(self, org_id: _Optional[str] = ..., owner_principal_id: _Optional[str] = ..., authorization_revision: _Optional[int] = ..., subjects: _Optional[_Iterable[_Union[WorkContextRevisionSubject, _Mapping]]] = ...) -> None: ...
+    operation_binding_id: str
+    seals_no_binding: bool
+    def __init__(self, org_id: _Optional[str] = ..., owner_principal_id: _Optional[str] = ..., authorization_revision: _Optional[int] = ..., subjects: _Optional[_Iterable[_Union[WorkContextRevisionSubject, _Mapping]]] = ..., operation_binding_id: _Optional[str] = ..., seals_no_binding: bool = ...) -> None: ...
 
 class AuthorizeEvidenceReadRequest(_message.Message):
     __slots__ = ("org_id", "caller_principal_id", "owner_principal_id", "task_id", "session_id")
@@ -212,3 +210,29 @@ class ConsumeSingleUseWorkContextRequest(_message.Message):
     context_id: str
     expires_at: _timestamp_pb2.Timestamp
     def __init__(self, org_id: _Optional[str] = ..., context_id: _Optional[str] = ..., expires_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+
+class VerifyIdempotentWorkContextRequest(_message.Message):
+    __slots__ = ("work_context_token", "expected_issuer", "expected_audience")
+    WORK_CONTEXT_TOKEN_FIELD_NUMBER: _ClassVar[int]
+    EXPECTED_ISSUER_FIELD_NUMBER: _ClassVar[int]
+    EXPECTED_AUDIENCE_FIELD_NUMBER: _ClassVar[int]
+    work_context_token: str
+    expected_issuer: str
+    expected_audience: str
+    def __init__(self, work_context_token: _Optional[str] = ..., expected_issuer: _Optional[str] = ..., expected_audience: _Optional[str] = ...) -> None: ...
+
+class VerifyIdempotentWorkContextResponse(_message.Message):
+    __slots__ = ("tenant_id", "owner_principal_id", "current_actor_principal_id", "task_id", "expires_at", "effective_scopes")
+    TENANT_ID_FIELD_NUMBER: _ClassVar[int]
+    OWNER_PRINCIPAL_ID_FIELD_NUMBER: _ClassVar[int]
+    CURRENT_ACTOR_PRINCIPAL_ID_FIELD_NUMBER: _ClassVar[int]
+    TASK_ID_FIELD_NUMBER: _ClassVar[int]
+    EXPIRES_AT_FIELD_NUMBER: _ClassVar[int]
+    EFFECTIVE_SCOPES_FIELD_NUMBER: _ClassVar[int]
+    tenant_id: str
+    owner_principal_id: str
+    current_actor_principal_id: str
+    task_id: str
+    expires_at: _timestamp_pb2.Timestamp
+    effective_scopes: _containers.RepeatedCompositeFieldContainer[WorkContextScope]
+    def __init__(self, tenant_id: _Optional[str] = ..., owner_principal_id: _Optional[str] = ..., current_actor_principal_id: _Optional[str] = ..., task_id: _Optional[str] = ..., expires_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., effective_scopes: _Optional[_Iterable[_Union[WorkContextScope, _Mapping]]] = ...) -> None: ...

@@ -114,7 +114,6 @@ def test_start_task_maps_fields_presents_bearer_and_defaults_ttl(server):
         bearer="user-token",
         org_id=ORG,
         task_id=TASK,
-        session_id=SESSION,
         audience="accounts",
         scopes=[SCOPE],
         actor_principal_id="agent-1",
@@ -125,7 +124,7 @@ def test_start_task_maps_fields_presents_bearer_and_defaults_ttl(server):
     assert authorization == "Bearer user-token"
     assert request.org_id == ORG
     assert request.task_id == TASK
-    assert request.session_id == SESSION
+    assert "session_id" not in request.DESCRIPTOR.fields_by_name
     assert request.audience == "accounts"
     assert request.actor_principal_id == "agent-1"
     assert list(request.authority_scopes) == [SCOPE]
@@ -142,7 +141,6 @@ def test_start_task_omits_unset_optionals(server):
         bearer="t",
         org_id=ORG,
         task_id=TASK,
-        session_id=SESSION,
         audience="accounts",
         scopes=[SCOPE],
         ttl=timedelta(minutes=10),
@@ -210,7 +208,6 @@ def test_ttl_outside_bounds_rejected_before_any_rpc(server, ttl):
             bearer="t",
             org_id=ORG,
             task_id=TASK,
-            session_id=SESSION,
             audience="accounts",
             scopes=[SCOPE],
             ttl=ttl,
@@ -259,7 +256,6 @@ def test_start_task_sets_workspace_and_project_when_given(server):
         bearer="user-token",
         org_id=ORG,
         task_id=TASK,
-        session_id=SESSION,
         audience="accounts",
         scopes=[SCOPE],
         workspace_id="ws-1",
@@ -278,7 +274,6 @@ def test_issued_token_round_trips_through_attach(server):
         bearer="user-token",
         org_id=ORG,
         task_id=TASK,
-        session_id=SESSION,
         audience="accounts",
         scopes=[SCOPE],
     )
@@ -308,7 +303,6 @@ def test_ttl_none_or_zero_defaults_to_five_minutes(server, ttl):
         bearer="t",
         org_id=ORG,
         task_id=TASK,
-        session_id=SESSION,
         audience="accounts",
         scopes=[SCOPE],
         ttl=ttl,
@@ -331,7 +325,6 @@ def test_gateway_without_bearer_keyword_surfaces_type_error_unmasked():
             bearer="t",
             org_id=ORG,
             task_id=TASK,
-            session_id=SESSION,
             audience="accounts",
             scopes=[SCOPE],
         )

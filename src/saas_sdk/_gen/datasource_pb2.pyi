@@ -92,6 +92,7 @@ class SourceSyncTrigger(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     SOURCE_SYNC_TRIGGER_MANUAL: _ClassVar[SourceSyncTrigger]
     SOURCE_SYNC_TRIGGER_SCHEDULED: _ClassVar[SourceSyncTrigger]
     SOURCE_SYNC_TRIGGER_WEBHOOK: _ClassVar[SourceSyncTrigger]
+    SOURCE_SYNC_TRIGGER_RECONFIGURED: _ClassVar[SourceSyncTrigger]
 
 class DatasourceDomainStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -162,6 +163,7 @@ SOURCE_SYNC_TRIGGER_UNSPECIFIED: SourceSyncTrigger
 SOURCE_SYNC_TRIGGER_MANUAL: SourceSyncTrigger
 SOURCE_SYNC_TRIGGER_SCHEDULED: SourceSyncTrigger
 SOURCE_SYNC_TRIGGER_WEBHOOK: SourceSyncTrigger
+SOURCE_SYNC_TRIGGER_RECONFIGURED: SourceSyncTrigger
 DATASOURCE_DOMAIN_STATUS_UNSPECIFIED: DatasourceDomainStatus
 DATASOURCE_DOMAIN_STATUS_PENDING: DatasourceDomainStatus
 DATASOURCE_DOMAIN_STATUS_VERIFIED: DatasourceDomainStatus
@@ -353,6 +355,40 @@ class AddSourceResponse(_message.Message):
     DATASOURCE_FIELD_NUMBER: _ClassVar[int]
     datasource: Datasource
     def __init__(self, datasource: _Optional[_Union[Datasource, _Mapping]] = ...) -> None: ...
+
+class UpdateSourceRequest(_message.Message):
+    __slots__ = ("org_id", "id", "branch", "paths", "file_extensions", "expected")
+    ORG_ID_FIELD_NUMBER: _ClassVar[int]
+    ID_FIELD_NUMBER: _ClassVar[int]
+    BRANCH_FIELD_NUMBER: _ClassVar[int]
+    PATHS_FIELD_NUMBER: _ClassVar[int]
+    FILE_EXTENSIONS_FIELD_NUMBER: _ClassVar[int]
+    EXPECTED_FIELD_NUMBER: _ClassVar[int]
+    org_id: str
+    id: str
+    branch: str
+    paths: _containers.RepeatedScalarFieldContainer[str]
+    file_extensions: _containers.RepeatedScalarFieldContainer[str]
+    expected: SourceFetchScope
+    def __init__(self, org_id: _Optional[str] = ..., id: _Optional[str] = ..., branch: _Optional[str] = ..., paths: _Optional[_Iterable[str]] = ..., file_extensions: _Optional[_Iterable[str]] = ..., expected: _Optional[_Union[SourceFetchScope, _Mapping]] = ...) -> None: ...
+
+class SourceFetchScope(_message.Message):
+    __slots__ = ("branch", "paths", "file_extensions")
+    BRANCH_FIELD_NUMBER: _ClassVar[int]
+    PATHS_FIELD_NUMBER: _ClassVar[int]
+    FILE_EXTENSIONS_FIELD_NUMBER: _ClassVar[int]
+    branch: str
+    paths: _containers.RepeatedScalarFieldContainer[str]
+    file_extensions: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, branch: _Optional[str] = ..., paths: _Optional[_Iterable[str]] = ..., file_extensions: _Optional[_Iterable[str]] = ...) -> None: ...
+
+class UpdateSourceResponse(_message.Message):
+    __slots__ = ("datasource", "job_id")
+    DATASOURCE_FIELD_NUMBER: _ClassVar[int]
+    JOB_ID_FIELD_NUMBER: _ClassVar[int]
+    datasource: Datasource
+    job_id: str
+    def __init__(self, datasource: _Optional[_Union[Datasource, _Mapping]] = ..., job_id: _Optional[str] = ...) -> None: ...
 
 class DatasourceConfigField(_message.Message):
     __slots__ = ("key", "display_name", "help", "required")
@@ -907,6 +943,156 @@ class RevokeSourceDelegationResponse(_message.Message):
     DELEGATION_FIELD_NUMBER: _ClassVar[int]
     delegation: SourceDelegation
     def __init__(self, delegation: _Optional[_Union[SourceDelegation, _Mapping]] = ...) -> None: ...
+
+class TriggerIdentity(_message.Message):
+    __slots__ = ("source", "binding")
+    SOURCE_FIELD_NUMBER: _ClassVar[int]
+    BINDING_FIELD_NUMBER: _ClassVar[int]
+    source: str
+    binding: str
+    def __init__(self, source: _Optional[str] = ..., binding: _Optional[str] = ...) -> None: ...
+
+class DeclaredTriggerSchedule(_message.Message):
+    __slots__ = ("cron", "timezone", "missed_run", "overlap", "deadline", "input_json")
+    CRON_FIELD_NUMBER: _ClassVar[int]
+    TIMEZONE_FIELD_NUMBER: _ClassVar[int]
+    MISSED_RUN_FIELD_NUMBER: _ClassVar[int]
+    OVERLAP_FIELD_NUMBER: _ClassVar[int]
+    DEADLINE_FIELD_NUMBER: _ClassVar[int]
+    INPUT_JSON_FIELD_NUMBER: _ClassVar[int]
+    cron: str
+    timezone: str
+    missed_run: str
+    overlap: str
+    deadline: int
+    input_json: str
+    def __init__(self, cron: _Optional[str] = ..., timezone: _Optional[str] = ..., missed_run: _Optional[str] = ..., overlap: _Optional[str] = ..., deadline: _Optional[int] = ..., input_json: _Optional[str] = ...) -> None: ...
+
+class TriggerDelegationReference(_message.Message):
+    __slots__ = ("reference", "delegation_id", "module", "binding", "audience", "tenant", "owner_principal_id", "scopes", "active", "created_at", "revoked_at", "revocation")
+    REFERENCE_FIELD_NUMBER: _ClassVar[int]
+    DELEGATION_ID_FIELD_NUMBER: _ClassVar[int]
+    MODULE_FIELD_NUMBER: _ClassVar[int]
+    BINDING_FIELD_NUMBER: _ClassVar[int]
+    AUDIENCE_FIELD_NUMBER: _ClassVar[int]
+    TENANT_FIELD_NUMBER: _ClassVar[int]
+    OWNER_PRINCIPAL_ID_FIELD_NUMBER: _ClassVar[int]
+    SCOPES_FIELD_NUMBER: _ClassVar[int]
+    ACTIVE_FIELD_NUMBER: _ClassVar[int]
+    CREATED_AT_FIELD_NUMBER: _ClassVar[int]
+    REVOKED_AT_FIELD_NUMBER: _ClassVar[int]
+    REVOCATION_FIELD_NUMBER: _ClassVar[int]
+    reference: str
+    delegation_id: str
+    module: str
+    binding: str
+    audience: str
+    tenant: str
+    owner_principal_id: str
+    scopes: _containers.RepeatedScalarFieldContainer[str]
+    active: bool
+    created_at: _timestamp_pb2.Timestamp
+    revoked_at: _timestamp_pb2.Timestamp
+    revocation: SourceDelegationRevocation
+    def __init__(self, reference: _Optional[str] = ..., delegation_id: _Optional[str] = ..., module: _Optional[str] = ..., binding: _Optional[str] = ..., audience: _Optional[str] = ..., tenant: _Optional[str] = ..., owner_principal_id: _Optional[str] = ..., scopes: _Optional[_Iterable[str]] = ..., active: bool = ..., created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., revoked_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., revocation: _Optional[_Union[SourceDelegationRevocation, str]] = ...) -> None: ...
+
+class TriggerChildContext(_message.Message):
+    __slots__ = ("delegation_id", "module", "binding", "audience", "scopes", "lookup", "minted_at", "record")
+    DELEGATION_ID_FIELD_NUMBER: _ClassVar[int]
+    MODULE_FIELD_NUMBER: _ClassVar[int]
+    BINDING_FIELD_NUMBER: _ClassVar[int]
+    AUDIENCE_FIELD_NUMBER: _ClassVar[int]
+    SCOPES_FIELD_NUMBER: _ClassVar[int]
+    LOOKUP_FIELD_NUMBER: _ClassVar[int]
+    MINTED_AT_FIELD_NUMBER: _ClassVar[int]
+    RECORD_FIELD_NUMBER: _ClassVar[int]
+    delegation_id: str
+    module: str
+    binding: str
+    audience: str
+    scopes: _containers.RepeatedScalarFieldContainer[str]
+    lookup: bool
+    minted_at: _timestamp_pb2.Timestamp
+    record: str
+    def __init__(self, delegation_id: _Optional[str] = ..., module: _Optional[str] = ..., binding: _Optional[str] = ..., audience: _Optional[str] = ..., scopes: _Optional[_Iterable[str]] = ..., lookup: bool = ..., minted_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., record: _Optional[str] = ...) -> None: ...
+
+class SourceTriggerDeclaration(_message.Message):
+    __slots__ = ("release", "operation", "schedule", "identity", "digest", "last_occurrence_at", "next_occurrence_at", "undeclarable_reason")
+    RELEASE_FIELD_NUMBER: _ClassVar[int]
+    OPERATION_FIELD_NUMBER: _ClassVar[int]
+    SCHEDULE_FIELD_NUMBER: _ClassVar[int]
+    IDENTITY_FIELD_NUMBER: _ClassVar[int]
+    DIGEST_FIELD_NUMBER: _ClassVar[int]
+    LAST_OCCURRENCE_AT_FIELD_NUMBER: _ClassVar[int]
+    NEXT_OCCURRENCE_AT_FIELD_NUMBER: _ClassVar[int]
+    UNDECLARABLE_REASON_FIELD_NUMBER: _ClassVar[int]
+    release: str
+    operation: str
+    schedule: DeclaredTriggerSchedule
+    identity: TriggerIdentity
+    digest: str
+    last_occurrence_at: _timestamp_pb2.Timestamp
+    next_occurrence_at: _timestamp_pb2.Timestamp
+    undeclarable_reason: str
+    def __init__(self, release: _Optional[str] = ..., operation: _Optional[str] = ..., schedule: _Optional[_Union[DeclaredTriggerSchedule, _Mapping]] = ..., identity: _Optional[_Union[TriggerIdentity, _Mapping]] = ..., digest: _Optional[str] = ..., last_occurrence_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., next_occurrence_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., undeclarable_reason: _Optional[str] = ...) -> None: ...
+
+class DelegateSourceTriggersRequest(_message.Message):
+    __slots__ = ("org_id", "source_id")
+    ORG_ID_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_ID_FIELD_NUMBER: _ClassVar[int]
+    org_id: str
+    source_id: str
+    def __init__(self, org_id: _Optional[str] = ..., source_id: _Optional[str] = ...) -> None: ...
+
+class DelegateSourceTriggersResponse(_message.Message):
+    __slots__ = ("delegations",)
+    DELEGATIONS_FIELD_NUMBER: _ClassVar[int]
+    delegations: _containers.RepeatedCompositeFieldContainer[TriggerDelegationReference]
+    def __init__(self, delegations: _Optional[_Iterable[_Union[TriggerDelegationReference, _Mapping]]] = ...) -> None: ...
+
+class GetSourceTriggerDeclarationRequest(_message.Message):
+    __slots__ = ("org_id", "source_id")
+    ORG_ID_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_ID_FIELD_NUMBER: _ClassVar[int]
+    org_id: str
+    source_id: str
+    def __init__(self, org_id: _Optional[str] = ..., source_id: _Optional[str] = ...) -> None: ...
+
+class GetSourceTriggerDeclarationResponse(_message.Message):
+    __slots__ = ("declaration", "delegations", "children")
+    DECLARATION_FIELD_NUMBER: _ClassVar[int]
+    DELEGATIONS_FIELD_NUMBER: _ClassVar[int]
+    CHILDREN_FIELD_NUMBER: _ClassVar[int]
+    declaration: SourceTriggerDeclaration
+    delegations: _containers.RepeatedCompositeFieldContainer[TriggerDelegationReference]
+    children: _containers.RepeatedCompositeFieldContainer[TriggerChildContext]
+    def __init__(self, declaration: _Optional[_Union[SourceTriggerDeclaration, _Mapping]] = ..., delegations: _Optional[_Iterable[_Union[TriggerDelegationReference, _Mapping]]] = ..., children: _Optional[_Iterable[_Union[TriggerChildContext, _Mapping]]] = ...) -> None: ...
+
+class ReconcileSourceRequest(_message.Message):
+    __slots__ = ("org_id", "source_id", "effect_id")
+    ORG_ID_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_ID_FIELD_NUMBER: _ClassVar[int]
+    EFFECT_ID_FIELD_NUMBER: _ClassVar[int]
+    org_id: str
+    source_id: str
+    effect_id: str
+    def __init__(self, org_id: _Optional[str] = ..., source_id: _Optional[str] = ..., effect_id: _Optional[str] = ...) -> None: ...
+
+class ReconcileSourceResponse(_message.Message):
+    __slots__ = ("effect_id", "status", "job_id")
+    EFFECT_ID_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    JOB_ID_FIELD_NUMBER: _ClassVar[int]
+    effect_id: str
+    status: str
+    job_id: str
+    def __init__(self, effect_id: _Optional[str] = ..., status: _Optional[str] = ..., job_id: _Optional[str] = ...) -> None: ...
+
+class LookupReconcileSourceRequest(_message.Message):
+    __slots__ = ("effect_id",)
+    EFFECT_ID_FIELD_NUMBER: _ClassVar[int]
+    effect_id: str
+    def __init__(self, effect_id: _Optional[str] = ...) -> None: ...
 
 class SourceOperation(_message.Message):
     __slots__ = ("name", "description", "method", "path", "query", "input_schema", "output_schema", "effect", "max_output_bytes", "digest")

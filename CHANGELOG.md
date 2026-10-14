@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add `verification.Client` for the host's idempotent-only Core verification
+  operation on the resolved `accounts/authority` endpoint. Credentials remain
+  opaque; request-local results are rechecked remotely without replay writes.
+- Breaking: `work_context.Client.start_task` no longer accepts `session_id`.
+  The current host assigns session identity and removed that request field.
+  Retain the existing Core-wire parser and signature-verification helpers;
+  composed consumers needing live authority use the host verification client.
+
 - Add `datasource.invoke`, `lookup`, `declare_operations` and
   `list_operations`, also available on the existing gateway-bound client.
 - Add operation declarations, effects, results, receipts, UUIDv7 effect IDs,

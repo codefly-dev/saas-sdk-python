@@ -10,12 +10,15 @@ is how to work *in* the repo.
 
 - **Owns:** the generated message bindings (`saas_sdk._gen`); the gateway-bound
   `datasource` facade; the consumer-side halves of Work Context — the mint
-  client and the verifier (`saas_sdk.work_context`); the current-revision client
-  (`saas_sdk.authorization_revision`).
+  client (`saas_sdk.work_context`); the host verification transport
+  (`saas_sdk.verification`); the current-revision client
+  (`saas_sdk.authorization_revision`). The existing local verifier parses Core
+  protobuf and checks signatures; it does not resolve live sealed authority.
 - **Does not own:** the protos, which live in `module-saas-starter`
   (`module/services/accounts/proto`); the Connect transport, which the solution
-  runtime owns behind `Gateway.unary`; the Work Context *signer*, which stays
-  authority-side in `sdk-go`; the wire format, which is pinned to `sdk-go`.
+  runtime owns behind `Gateway.unary`; canonical Work Context minting, wire
+  format and verification, which belong to `core/workcontext`. Current composed
+  consumers use the host port; Python never reimplements its sealed verification.
 - **Never hand-edit `src/saas_sdk/_gen/`.** It is regenerated from a proto ref
   recorded in `SOURCE.txt` — see the `regenerate-bindings` skill.
 - Everything ships under the single top-level package `saas_sdk`, so installing
@@ -49,20 +52,18 @@ uninstallable for consumers still on protobuf 5.x.
 
 ## Parity with saas-sdk-go is a cross-repo invariant
 
-Two fixtures are byte-identical to their Go counterparts, and CI in both repos
-verifies the same bytes:
+The Work Context fixture tests the existing Core-wire parser; the authorization
+revision fixture remains shared with the Go SDK. Do not change either merely to
+make a test pass. Core owns the Work Context encoding, and the host owns live
+sealed verification. Keep the existing parser available to its consumers without
+reimplementing the host's live resolver in Python.
 
-- `tests/fixtures/work_context_wire_golden.json` ↔ sdk-go's
-  `TestWorkContextWireGolden`. The wire format is **not** a JWT; field order,
-  `uint64`-as-decimal-string encoding, scope canonicalization, base64url and
-  Ed25519 signing are pinned byte-for-byte.
-- `tests/fixtures/authorization_revision_projection.json` ↔ the Go SDK's
+- `tests/fixtures/work_context_wire_golden.json` pins an authentic Core token.
+- `tests/fixtures/authorization_revision_projection.json` matches the Go SDK's
   `authorizationrevision/testdata/projection.json`.
 
-Editing a fixture to make a test here pass is not a fix — it is a silent break
-of the other implementation, which will keep minting or verifying the old bytes.
-A wire change is one coordinated pair of pull requests. See the
-`wire-format-parity` skill.
+Current-host live verification is tested through the generated host RPC and the
+opaque-token transport in `verification`, with Core conformance at its owner.
 
 ## When something does not work
 

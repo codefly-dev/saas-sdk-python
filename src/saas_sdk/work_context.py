@@ -12,13 +12,12 @@ covers the two sides a solution needs:
 * **Callee side** — :class:`Verifier` / :class:`JWKSVerifier` *verify* a
   presented context so a service can act on delegated authority.
 
-The wire format is **not a JWT**: a token is ``base64url(payload).base64url(sig)``
-where ``payload`` is a fixed snake_case JSON object, ``sig`` is a raw 64-byte
-Ed25519 signature over the exact payload bytes, and ``key_id`` lives *inside* the
-payload. Field order, uint64-as-decimal-string encoding, scope sorting, and
-base64url are pinned byte-for-byte to ``sdk-go`` (see the wire golden in
-``tests/fixtures``), so a token minted by any Codefly SDK verifies identically
-here.
+The wire format is **not a JWT**: a token is ``base64url(payload).base64url(sig)``.
+The payload is Core's ``WorkContextV1`` protobuf; the Ed25519 signature covers
+its exact canonical bytes. The fixture in ``tests/fixtures`` pins an authentic
+Core capability. These helpers check encoding and signatures; live sealed
+installation and binding checks belong to the host verification port exposed by
+``saas_sdk.verification``.
 
 Two verifiers are provided:
 
@@ -907,7 +906,6 @@ class Client:
         bearer: str,
         org_id: str,
         task_id: str,
-        session_id: str,
         audience: str,
         scopes: Sequence[WorkContextScope],
         actor_principal_id: str = "",
@@ -920,11 +918,11 @@ class Client:
 
         ``actor_principal_id`` empty means a direct human-owned task; otherwise
         it names the agent principal acting under the user's authority.
+        The host assigns the session; callers cannot choose its identity.
         """
         request = pb.StartTaskWorkContextRequest(
             org_id=org_id,
             task_id=task_id,
-            session_id=session_id,
             audience=audience,
             authority_scopes=list(scopes),
             replay_policy=replay_policy,

@@ -1,14 +1,18 @@
-src/saas_sdk/_gen generated from codefly-dev/module-saas-starter@v0.0.94
+DEVELOPMENT CANDIDATE — not a published host release.
+src/saas_sdk/_gen regenerated from codefly-dev/module-saas-starter@2e1fdb5c1b6bf7594db75d76cbe6a1518ca7cde0
 (accounts public proto: module/services/accounts/proto)
-Release tag: https://github.com/codefly-dev/module-saas-starter/releases/tag/v0.0.94
-Annotated tag object: 68f3fd38c721724166ee37e1f5ca75441fd76661
-Resolved commit: 9f6a4aa26edcbcb4d76cf4ffb47f71010e94f4eb
-services:
-  saas.accounts.v1.DatasourceService (datasource.proto)
-  saas.accounts.v1.WorkContextService (work_contexts.proto)
-messages:
-  saas.jobs.v1 (jobs.proto, as saas_sdk/_gen/jobs.proto: datasource.proto's sync state)
-custom options + shared descriptors stripped — see scripts/generate.sh
+Resolved commit: 2e1fdb5c1b6bf7594db75d76cbe6a1518ca7cde0
 
-module version: 0.1.0 (module/module.package.codefly.yaml)
-This SDK's release is matched to the saas-starter module version above.
+Inputs (SHA-256):
+43d579e29dbfe39a2d80cb7efe7e360cbcbf951ee54772f7e28bfca10a0dfaab  saas/jobs/v1/jobs.proto
+8c7431b2e934fe86601bb0e13db039618565a0dc3a6ce6ddcb9468b908bbb319  saas/accounts/v1/datasource.proto
+a9b70803c33add5222fbe5b18bcd1696205a107d8016e5992d0b2d47aefd7250  saas/accounts/v1/work_contexts.proto
+
+Generation: scripts/generate.sh <host>/module/services/accounts/proto
+Custom options/shared descriptors stripped by scripts/strip_options.py.
+Core WorkContext bindings and parser retained from SDK main a954baf641068568c106dbb96e19a408cfdf4c62.
+
+Module version baseline: 0.1.0. No release is asserted.
+RELEASE GATE: the maintained gen-drift workflow requires a released host tag.
+After the host release, regenerate from that tag and record its tag object and
+resolved commit here. This candidate must not be released before that check passes.
