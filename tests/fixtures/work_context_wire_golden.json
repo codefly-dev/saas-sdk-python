@@ -1,10 +1,10 @@
 {
-  "description": "Work Context wire golden, byte-identical to sdk-go's TestWorkContextWireGolden. The `token` is the exact two-segment base64url(payload).base64url(Ed25519 sig) sdk-go emits for the shared test input; a verifier that accepts it and reports these claims agrees on payload field order, uint64-as-decimal-string encoding, scope canonicalization, base64url, and Ed25519 signing. Both repos pin this same token.",
+  "description": "Work Context wire golden, byte-identical to what core's workcontext mints for the shared test input: the `token` is base64url(deterministic protobuf codefly.base.v0.WorkContextV1).base64url(Ed25519 sig over those bytes). A verifier that accepts it and reports these claims agrees with core on the message encoding, canonical form, base64url and Ed25519 signing. Core requires a seal (installation-golden, epoch 1) and an actor epoch (1), which the Python claims do not expose.",
   "signing_key_seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
   "public_key_b64url": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
   "key_id": "work-context-test-2026-07",
   "verify_time_unix": 1784810096,
-  "token": "eyJ0eXAiOiJjb2RlZmx5LndvcmstY29udGV4dC92MSIsImFsZ29yaXRobSI6IkVkMjU1MTkiLCJrZXlfaWQiOiJ3b3JrLWNvbnRleHQtdGVzdC0yMDI2LTA3IiwiaXNzdWVyIjoiaHR0cHM6Ly9hY2NvdW50cy5jb2RlZmx5LmRldi93b3JrLWNvbnRleHQiLCJhdWRpZW5jZSI6IndhcmRlbi5ldmlkZW5jZSIsIm5vdF9iZWZvcmVfdW5peCI6MTc4NDgxMDA5NiwiaXNzdWVkX2F0X3VuaXgiOjE3ODQ4MTAwOTYsImV4cGlyZXNfYXRfdW5peCI6MTc4NDgxMDM5Niwibm9uY2UiOiJub25jZS1maXhlZC1mb3ItZ29sZGVuIiwiYXV0aG9yaXphdGlvbl9yZXZpc2lvbiI6IjE4NDQ2NzQ0MDczNzA5NTUxNjE1IiwicmVwbGF5X3BvbGljeSI6ImlkZW1wb3RlbnQiLCJ0ZW5hbnRfaWQiOiJ0ZW5hbnQtY29kZWZseSIsIm93bmVyX3ByaW5jaXBhbF9pZCI6InByaW5jaXBhbC1hbnRvaW5lIiwidGFza19pZCI6InRhc2stcm9hZG1hcCIsInNlc3Npb25faWQiOiJzZXNzaW9uLXJvb3QiLCJhdXRob3JpdHlfc2NvcGVzIjpbeyJyZXNvdXJjZV9raW5kIjoiZXZpZGVuY2UiLCJhY3Rpb25zIjpbImFwcGVuZCJdLCJyZXNvdXJjZV9pZHMiOltdfSx7InJlc291cmNlX2tpbmQiOiJyZXBvc2l0b3J5IiwiYWN0aW9ucyI6WyJyZWFkIiwid3JpdGUiXSwicmVzb3VyY2VfaWRzIjpbInJlcG8tY29kZWZseSIsInJlcG8td2FyZGVuIl19XSwiYWN0b3JfY2hhaW4iOlt7InByaW5jaXBhbF9pZCI6ImFnZW50LWNsYXVkZS1jb2RlIiwicHJpbmNpcGFsX2tpbmQiOiJhZ2VudCIsImRlbGVnYXRpb25faWQiOiJkZWxlZ2F0aW9uLTEiLCJncmFudGVkX3Njb3BlcyI6W3sicmVzb3VyY2Vfa2luZCI6ImV2aWRlbmNlIiwiYWN0aW9ucyI6WyJhcHBlbmQiXSwicmVzb3VyY2VfaWRzIjpbXX0seyJyZXNvdXJjZV9raW5kIjoicmVwb3NpdG9yeSIsImFjdGlvbnMiOlsicmVhZCIsIndyaXRlIl0sInJlc291cmNlX2lkcyI6WyJyZXBvLXdhcmRlbiJdfV19XSwiYXR0cmlidXRpb25fdGVhbV9pZHMiOlsidGVhbS1haSIsInRlYW0tcGxhdGZvcm0iXSwid29ya3NwYWNlX2lkIjoid29ya3NwYWNlLWRldXMiLCJwcm9qZWN0X2lkIjoicHJvamVjdC13YXJkZW4ifQ.pVZhqvPljkv6SyFD9UAg_oKC4SPj4hIV1Ha0W33cCV04IeaayLDe0w8iVgbxy9wwE2AWY8dXbIMmvnVk0QQRAQ",
+  "token": "Chdjb2RlZmx5LndvcmstY29udGV4dC92MRIHRWQyNTUxORoZd29yay1jb250ZXh0LXRlc3QtMjAyNi0wNyIpaHR0cHM6Ly9hY2NvdW50cy5jb2RlZmx5LmRldi93b3JrLWNvbnRleHQqD3dhcmRlbi5ldmlkZW5jZTDwlIjTBjjwlIjTBkCcl4jTBkoWbm9uY2UtZml4ZWQtZm9yLWdvbGRlblD___________8BWgppZGVtcG90ZW50Yg50ZW5hbnQtY29kZWZseWoRcHJpbmNpcGFsLWFudG9pbmVyDHRhc2stcm9hZG1hcHoMc2Vzc2lvbi1yb290igESCghldmlkZW5jZRIGYXBwZW5kigE0CgpyZXBvc2l0b3J5EgRyZWFkEgV3cml0ZRoMcmVwby1jb2RlZmx5GgtyZXBvLXdhcmRlbpIBZgoRYWdlbnQtY2xhdWRlLWNvZGUSBWFnZW50GgxkZWxlZ2F0aW9uLTEiEgoIZXZpZGVuY2USBmFwcGVuZCImCgpyZXBvc2l0b3J5EgRyZWFkEgV3cml0ZRoLcmVwby13YXJkZW44AZoBB3RlYW0tYWmaAQ10ZWFtLXBsYXRmb3JtogEOd29ya3NwYWNlLWRldXOqAQ5wcm9qZWN0LXdhcmRlbtIBGQgBEhNpbnN0YWxsYXRpb24tZ29sZGVuGAE._We8Q14CdqzeqD0jxhWvoVYlotyeNsEeGj-8c4cZg2H5nzItvAxWxeeahDvIFXJ6uxJILlebN46BgfJIrhcfBA",
   "expectations": {
     "issuer": "https://accounts.codefly.dev/work-context",
     "audience": "warden.evidence",
@@ -31,8 +31,24 @@
     "session_id": "session-root",
     "parent_session_id": null,
     "authority_scopes": [
-      {"resource_kind": "evidence", "actions": ["append"], "resource_ids": []},
-      {"resource_kind": "repository", "actions": ["read", "write"], "resource_ids": ["repo-codefly", "repo-warden"]}
+      {
+        "resource_kind": "evidence",
+        "actions": [
+          "append"
+        ],
+        "resource_ids": []
+      },
+      {
+        "resource_kind": "repository",
+        "actions": [
+          "read",
+          "write"
+        ],
+        "resource_ids": [
+          "repo-codefly",
+          "repo-warden"
+        ]
+      }
     ],
     "actor_chain": [
       {
@@ -40,12 +56,30 @@
         "principal_kind": "agent",
         "delegation_id": "delegation-1",
         "granted_scopes": [
-          {"resource_kind": "evidence", "actions": ["append"], "resource_ids": []},
-          {"resource_kind": "repository", "actions": ["read", "write"], "resource_ids": ["repo-warden"]}
+          {
+            "resource_kind": "evidence",
+            "actions": [
+              "append"
+            ],
+            "resource_ids": []
+          },
+          {
+            "resource_kind": "repository",
+            "actions": [
+              "read",
+              "write"
+            ],
+            "resource_ids": [
+              "repo-warden"
+            ]
+          }
         ]
       }
     ],
-    "attribution_team_ids": ["team-ai", "team-platform"],
+    "attribution_team_ids": [
+      "team-ai",
+      "team-platform"
+    ],
     "workspace_id": "workspace-deus",
     "project_id": "project-warden"
   }
