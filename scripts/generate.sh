@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Regenerate src/saas_sdk/_gen from the accounts proto.
 #
-# Usage: scripts/generate.sh <module-saas-starter>/module/services/accounts/proto
+# Usage: scripts/generate.sh <module-saas-starter>/module/services/accounts/proto [<codefly-dev/core>/proto]
 #
 # The bindings deliberately embed only the accounts protos this SDK exposes: the
 # custom options (buf.validate, saas.policy) and their shared descriptors, plus
@@ -40,4 +40,20 @@ for proto in "${protos[@]}"; do
   cp "$tmp/out/${dir}/${base}_pb2.py"  "$repo_root/src/saas_sdk/_gen/${base}_pb2.py"
   cp "$tmp/out/${dir}/${base}_pb2.pyi" "$repo_root/src/saas_sdk/_gen/${base}_pb2.pyi"
 done
+# The Work Context a verifier reads is core's message, not the host's: the
+# payload of every token the host mints is a codefly.base.v0.WorkContextV1
+# (protobuf), so its bindings are generated from core's proto module at the
+# version this SDK verifies against (second argument, the `proto/` directory
+# of codefly-dev/core; its buf.validate options are stripped like the rest).
+core_proto_dir="${2:-}"
+if [ -n "$core_proto_dir" ]; then
+  core_proto_dir="$(cd "$core_proto_dir" && pwd)"
+  core=codefly/base/v0/work_context.proto
+  (cd "$core_proto_dir" && buf build . --path "$core" -o "$tmp/core.binpb")
+  python3 "$repo_root/scripts/strip_options.py" "$tmp/core.binpb" "$tmp/core-stripped.binpb" "$core"
+  buf generate --template "$repo_root/buf.gen.yaml" "$tmp/core-stripped.binpb" -o "$tmp/core-out"
+  cp "$tmp/core-out/codefly/base/v0/work_context_pb2.py"  "$repo_root/src/saas_sdk/_gen/work_context_pb2.py"
+  cp "$tmp/core-out/codefly/base/v0/work_context_pb2.pyi" "$repo_root/src/saas_sdk/_gen/work_context_pb2.pyi"
+  echo "regenerated src/saas_sdk/_gen/work_context_pb2 from core's $core"
+fi
 echo "regenerated src/saas_sdk/_gen from ${#protos[@]} proto(s)"

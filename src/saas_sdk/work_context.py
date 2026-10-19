@@ -50,6 +50,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from saas_sdk._gen import work_contexts_pb2 as pb
+from saas_sdk._gen import work_context_pb2 as corepb
 
 # Re-exported so a consumer names the types the mint side takes and returns
 # without importing saas_sdk._gen. Same objects, so isinstance and existing
@@ -567,119 +568,83 @@ def _decode_canonical(segment: str, name: str) -> bytes:
 
 
 def _probe_key_id(payload: bytes) -> str:
+    """The key id a token names, read before the signature is checked. The
+    payload is a core ``WorkContextV1`` (protobuf), never JSON: a JSON payload
+    is some other minter's token, refused as such."""
+    context = _decode_core_payload(payload)
+    _validate_bounded("key_id", context.key_id, _MAX_KIND_BYTES, required=True)
+    return context.key_id
+
+
+def _decode_core_payload(payload: bytes) -> "corepb.WorkContextV1":
+    """Decode the signed payload exactly as core does (``workcontext.decodeClaims``):
+    the bytes are a ``codefly.base.v0.WorkContextV1``, they must parse whole, carry
+    no field this message does not know, and BE their own canonical encoding —
+    the signature covers whatever bytes were presented, so a second encoding of
+    the same claims must not verify. The host has minted this payload since the
+    cutover to core's authority (2026-09-26); the JSON object this SDK used to
+    read is no longer any issuer's wire."""
+    if payload[:1] == b"{":
+        raise WorkContextError("payload is a JSON object, not a core Work Context")
+    context = corepb.WorkContextV1()
     try:
-        document = json.loads(payload)
-    except (ValueError, UnicodeDecodeError) as error:
-        raise WorkContextError(f"decode key id: {error}") from None
-    key_id = document.get("key_id", "") if isinstance(document, dict) else ""
-    if not isinstance(key_id, str):
-        raise WorkContextError("key id must be a string")
-    _validate_bounded("key_id", key_id, _MAX_KIND_BYTES, required=True)
-    return key_id
-
-
-_CONTEXT_KEYS = frozenset(
-    {
-        "typ",
-        "algorithm",
-        "key_id",
-        "issuer",
-        "audience",
-        "not_before_unix",
-        "issued_at_unix",
-        "expires_at_unix",
-        "nonce",
-        "authorization_revision",
-        "replay_policy",
-        "tenant_id",
-        "owner_principal_id",
-        "task_id",
-        "session_id",
-        "parent_session_id",
-        "authority_scopes",
-        "actor_chain",
-        "attribution_team_ids",
-        "workspace_id",
-        "project_id",
-    }
-)
-_SCOPE_KEYS = frozenset({"resource_kind", "actions", "resource_ids"})
-_ACTOR_KEYS = frozenset({"principal_id", "principal_kind", "delegation_id", "granted_scopes"})
+        context.ParseFromString(payload)
+    except Exception as error:  # DecodeError is not exported stably across protobuf lines
+        raise WorkContextError(f"payload is not a WorkContextV1: {error}") from None
+    # The Python runtime keeps unknown fields and re-emits them, so they are
+    # discarded first: a payload that carried a field this message does not
+    # know — or any non-canonical encoding — then fails to round-trip, and one
+    # check covers both of core's refusals.
+    context.DiscardUnknownFields()
+    if context.SerializeToString(deterministic=True) != payload:
+        raise WorkContextError("payload is not the canonical encoding of its claims, or carries a field this SDK does not know")
+    return context
 
 
 def _unmarshal(payload: bytes) -> WorkContext:
-    try:
-        document = json.loads(payload)
-    except (ValueError, UnicodeDecodeError) as error:
-        raise WorkContextError(f"decode payload: {error}") from None
-    if not isinstance(document, dict):
-        raise WorkContextError("payload must be a JSON object")
-    _reject_unknown(document, _CONTEXT_KEYS, "payload")
-    revision = _parse_uint64(_require_str(document, "authorization_revision"))
+    context = _decode_core_payload(payload)
     return WorkContext(
-        typ=_require_str(document, "typ"),
-        algorithm=_require_str(document, "algorithm"),
-        key_id=_require_str(document, "key_id"),
-        issuer=_require_str(document, "issuer"),
-        audience=_require_str(document, "audience"),
-        not_before_unix=_require_int(document, "not_before_unix"),
-        issued_at_unix=_require_int(document, "issued_at_unix"),
-        expires_at_unix=_require_int(document, "expires_at_unix"),
-        nonce=_require_str(document, "nonce"),
-        authorization_revision=revision,
-        replay_policy=_require_str(document, "replay_policy"),
-        tenant_id=_require_str(document, "tenant_id"),
-        owner_principal_id=_require_str(document, "owner_principal_id"),
-        task_id=_require_str(document, "task_id"),
-        session_id=_require_str(document, "session_id"),
-        parent_session_id=_optional_str(document, "parent_session_id"),
-        authority_scopes=_parse_scopes(document.get("authority_scopes")),
-        actor_chain=_parse_actors(document.get("actor_chain")),
-        attribution_team_ids=_require_str_list(document, "attribution_team_ids"),
-        workspace_id=_optional_str(document, "workspace_id"),
-        project_id=_optional_str(document, "project_id"),
+        typ=context.typ,
+        algorithm=context.algorithm,
+        key_id=context.key_id,
+        issuer=context.issuer,
+        audience=context.audience,
+        not_before_unix=int(context.not_before_unix),
+        issued_at_unix=int(context.issued_at_unix),
+        expires_at_unix=int(context.expires_at_unix),
+        nonce=context.nonce,
+        authorization_revision=int(context.authorization_revision),
+        replay_policy=context.replay_policy,
+        tenant_id=context.tenant_id,
+        owner_principal_id=context.owner_principal_id,
+        task_id=context.task_id,
+        session_id=context.session_id,
+        parent_session_id=None,
+        authority_scopes=_scopes_of(context.authority_scopes),
+        actor_chain=tuple(
+            WorkActor(
+                principal_id=actor.principal_id,
+                principal_kind=actor.principal_kind,
+                delegation_id=actor.delegation_id,
+                granted_scopes=_scopes_of(actor.granted_scopes),
+            )
+            for actor in context.actor_chain
+        ),
+        attribution_team_ids=tuple(context.attribution_team_ids),
+        workspace_id=context.workspace_id if context.HasField("workspace_id") else None,
+        project_id=context.project_id if context.HasField("project_id") else None,
     )
 
 
-def _parse_scopes(raw) -> tuple[WorkScope, ...]:
-    if raw is None:
-        return ()
-    if not isinstance(raw, list):
-        raise WorkContextError("scopes must be a JSON array")
-    scopes = []
-    for entry in raw:
-        if not isinstance(entry, dict):
-            raise WorkContextError("scope must be a JSON object")
-        _reject_unknown(entry, _SCOPE_KEYS, "scope")
-        scopes.append(
-            WorkScope(
-                resource_kind=_require_str(entry, "resource_kind"),
-                actions=_require_str_list(entry, "actions"),
-                resource_ids=_require_str_list(entry, "resource_ids"),
-            )
+def _scopes_of(scopes) -> tuple[WorkScope, ...]:
+    return tuple(
+        WorkScope(
+            resource_kind=scope.resource_kind,
+            actions=tuple(scope.actions),
+            resource_ids=tuple(scope.resource_ids),
         )
-    return tuple(scopes)
-
-
-def _parse_actors(raw) -> tuple[WorkActor, ...]:
-    if raw is None:
-        return ()
-    if not isinstance(raw, list):
-        raise WorkContextError("actor_chain must be a JSON array")
-    actors = []
-    for entry in raw:
-        if not isinstance(entry, dict):
-            raise WorkContextError("actor must be a JSON object")
-        _reject_unknown(entry, _ACTOR_KEYS, "actor")
-        actors.append(
-            WorkActor(
-                principal_id=_require_str(entry, "principal_id"),
-                principal_kind=_require_str(entry, "principal_kind"),
-                delegation_id=_require_str(entry, "delegation_id"),
-                granted_scopes=_parse_scopes(entry.get("granted_scopes")),
-            )
-        )
-    return tuple(actors)
+        for scope in scopes
+    )
 
 
 def _validate_work_context(context: WorkContext) -> None:

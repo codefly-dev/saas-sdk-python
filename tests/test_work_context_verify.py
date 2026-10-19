@@ -82,8 +82,84 @@ def _canonical_payload(**overrides) -> dict:
     return payload
 
 
+def encode_payload(payload: dict) -> bytes:
+    """The payload as core encodes it: a deterministic ``WorkContextV1``. The
+    dict is the readable shape the tests reason in; the seal and actor epochs
+    core requires are filled with the golden's values unless given."""
+    from saas_sdk._gen import work_context_pb2 as corepb
+
+    def scopes(entries):
+        return [
+            corepb.WorkScopeV1(
+                resource_kind=e["resource_kind"], actions=list(e["actions"]), resource_ids=list(e["resource_ids"])
+            )
+            for e in entries or []
+        ]
+
+    message = corepb.WorkContextV1(
+        typ=payload["typ"], algorithm=payload["algorithm"], key_id=payload["key_id"],
+        issuer=payload["issuer"], audience=payload["audience"],
+        not_before_unix=int(payload["not_before_unix"]), issued_at_unix=int(payload["issued_at_unix"]),
+        expires_at_unix=int(payload["expires_at_unix"]), nonce=payload["nonce"],
+        authorization_revision=int(payload["authorization_revision"]), replay_policy=payload["replay_policy"],
+        tenant_id=payload["tenant_id"], owner_principal_id=payload["owner_principal_id"],
+        task_id=payload["task_id"], session_id=payload["session_id"],
+        authority_scopes=scopes(payload.get("authority_scopes")),
+        actor_chain=[
+            corepb.WorkActorV1(
+                principal_id=a["principal_id"], principal_kind=a["principal_kind"], delegation_id=a["delegation_id"],
+                granted_scopes=scopes(a.get("granted_scopes")), principal_epoch=int(a.get("principal_epoch", 1)),
+            )
+            for a in payload.get("actor_chain") or []
+        ],
+        attribution_team_ids=list(payload.get("attribution_team_ids") or []),
+    )
+    for optional in ("workspace_id", "project_id"):
+        if payload.get(optional) is not None:
+            setattr(message, optional, payload[optional])
+    seal = payload.get("seal") or {"principal_epoch": 1, "installation_id": "installation-golden", "installation_revision": 1}
+    message.seal.principal_epoch = int(seal["principal_epoch"])
+    message.seal.installation_id = seal["installation_id"]
+    message.seal.installation_revision = int(seal["installation_revision"])
+    return message.SerializeToString(deterministic=True)
+
+
+def decode_payload(payload: bytes) -> dict:
+    """The readable shape of a core payload, for field-by-field comparison."""
+    from saas_sdk._gen import work_context_pb2 as corepb
+
+    message = corepb.WorkContextV1()
+    message.ParseFromString(payload)
+
+    def scopes(entries):
+        return [
+            {"resource_kind": s.resource_kind, "actions": list(s.actions), "resource_ids": list(s.resource_ids)}
+            for s in entries
+        ]
+
+    return {
+        "typ": message.typ, "algorithm": message.algorithm, "key_id": message.key_id,
+        "issuer": message.issuer, "audience": message.audience,
+        "not_before_unix": message.not_before_unix, "issued_at_unix": message.issued_at_unix,
+        "expires_at_unix": message.expires_at_unix, "nonce": message.nonce,
+        "authorization_revision": message.authorization_revision, "replay_policy": message.replay_policy,
+        "tenant_id": message.tenant_id, "owner_principal_id": message.owner_principal_id,
+        "task_id": message.task_id, "session_id": message.session_id,
+        "parent_session_id": None,
+        "authority_scopes": scopes(message.authority_scopes),
+        "actor_chain": [
+            {"principal_id": a.principal_id, "principal_kind": a.principal_kind, "delegation_id": a.delegation_id,
+             "granted_scopes": scopes(a.granted_scopes)}
+            for a in message.actor_chain
+        ],
+        "attribution_team_ids": list(message.attribution_team_ids),
+        "workspace_id": message.workspace_id if message.HasField("workspace_id") else None,
+        "project_id": message.project_id if message.HasField("project_id") else None,
+    }
+
+
 def sign_token(payload: dict, seed: bytes) -> str:
-    payload_bytes = json.dumps(payload, separators=(",", ":")).encode()
+    payload_bytes = encode_payload(payload)
     signature = _private_key(seed).sign(payload_bytes)
     return _b64url_encode(payload_bytes) + "." + _b64url_encode(signature)
 
@@ -123,14 +199,8 @@ def test_wire_golden_payload_matches_fixture_claims_field_by_field():
     """Decode the golden payload directly and confirm every field, so a silent
     re-encoding drift in either SDK is caught."""
     payload_segment = _FIXTURE["token"].split(".", 1)[0]
-    decoded = json.loads(_b64url_decode(payload_segment))
+    decoded = decode_payload(_b64url_decode(payload_segment))
     expected = dict(_FIXTURE["expected_claims"])
-    # The wire payload carries authorization_revision as a decimal string and
-    # omits absent optional fields; normalize before comparing to claim values.
-    assert decoded["authorization_revision"] == str(expected["authorization_revision"])
-    assert "parent_session_id" not in decoded
-    decoded["authorization_revision"] = int(decoded["authorization_revision"])
-    decoded["parent_session_id"] = None
     assert decoded == expected
 
 
@@ -230,21 +300,6 @@ def _verify_local(payload: dict, seed: bytes = bytes(range(32))):
     return verifier.verify(token)
 
 
-@pytest.mark.parametrize("field", ["parent_session_id", "workspace_id", "project_id"])
-def test_rejects_present_but_empty_optional_field(field):
-    """The proto declares min_len=1 on these optional fields (codefly-dev/sdk-go#7);
-    present-but-empty must fail closed."""
-    with pytest.raises(wc.WorkContextError):
-        _verify_local(_canonical_payload(**{field: ""}))
-
-
-@pytest.mark.parametrize("field", ["parent_session_id", "workspace_id", "project_id"])
-def test_accepts_present_non_empty_optional_field(field):
-    value = "session-other" if field == "parent_session_id" else "value"
-    claims = _verify_local(_canonical_payload(**{field: value}))
-    assert getattr(claims, field) == value
-
-
 def test_whitespace_only_required_field_is_accepted():
     """min_len=1 is a byte-length floor, not a trim: a non-empty whitespace id
     (" ") clears it and must be accepted, so Python never rejects a token sdk-go
@@ -254,18 +309,6 @@ def test_whitespace_only_required_field_is_accepted():
 
     with pytest.raises(wc.WorkContextError, match="tenant_id is required"):
         _verify_local(_canonical_payload(tenant_id=""))
-
-
-def test_rejects_unknown_payload_field():
-    with pytest.raises(wc.WorkContextError, match="unknown payload field"):
-        _verify_local(_canonical_payload(extra="nope"))
-
-
-def test_rejects_unknown_scope_field():
-    payload = _canonical_payload()
-    payload["authority_scopes"][0]["surprise"] = 1
-    with pytest.raises(wc.WorkContextError, match="unknown scope field"):
-        _verify_local(payload)
 
 
 def test_rejects_bad_typ_and_algorithm():
@@ -292,35 +335,74 @@ def test_rejects_unsorted_attribution_team_ids():
         _verify_local(_canonical_payload(attribution_team_ids=["team-platform", "team-ai"]))
 
 
-def test_rejects_parent_session_equal_to_session():
-    with pytest.raises(wc.WorkContextError, match="parent session equals session"):
-        _verify_local(_canonical_payload(parent_session_id="session-root"))
+# --- core wire ------------------------------------------------------------------
+# The payload is core's WorkContextV1 (protobuf), the one encoding the host
+# mints. What the JSON wire had to spell out — a decimal-string revision, an
+# unknown key, an absent-vs-empty optional — the message carries natively; what
+# remains to prove is that the verifier refuses what is not core's encoding.
 
 
-def test_authorization_revision_must_be_decimal_string():
-    payload = _canonical_payload()
-    payload["authorization_revision"] = 42  # a JSON number, not the decimal string
-    with pytest.raises(wc.WorkContextError, match="authorization_revision"):
-        _verify_local(payload)
+@pytest.mark.parametrize("field", ["workspace_id", "project_id"])
+def test_rejects_present_but_empty_optional_field(field):
+    """The proto declares min_len=1 on these optional fields (codefly-dev/sdk-go#7);
+    present-but-empty must fail closed."""
+    with pytest.raises(wc.WorkContextError):
+        _verify_local(_canonical_payload(**{field: ""}))
 
 
-def test_authorization_revision_rejects_overflow():
-    with pytest.raises(wc.WorkContextError, match="authorization_revision"):
-        _verify_local(_canonical_payload(authorization_revision=str(1 << 64)))
+@pytest.mark.parametrize("field", ["workspace_id", "project_id"])
+def test_accepts_present_non_empty_optional_field(field):
+    claims = _verify_local(_canonical_payload(**{field: "value"}))
+    assert getattr(claims, field) == "value"
 
 
-def test_authorization_revision_overlong_fails_as_work_context_error():
-    """A digit string past CPython's int-conversion limit must surface as a
-    WorkContextError, not a raw ValueError escaping the verifier (finding #2)."""
-    with pytest.raises(wc.WorkContextError, match="authorization_revision"):
-        _verify_local(_canonical_payload(authorization_revision="9" * 5000))
+def test_rejects_a_json_payload_as_not_a_core_token():
+    """The JSON object this SDK used to read is no issuer's wire any more: a
+    token carrying one is some other minter's, refused by name before any key
+    is consulted."""
+    payload = json.dumps(_canonical_payload(), separators=(",", ":")).encode()
+    signature = _private_key(bytes.fromhex(_FIXTURE["signing_key_seed_hex"])).sign(payload)
+    token = _b64url_encode(payload) + "." + _b64url_encode(signature)
+    with pytest.raises(wc.WorkContextError, match="JSON object, not a core Work Context"):
+        golden_verifier().verify(token, wc.Expectations(**_FIXTURE["expectations"]))
 
 
-def test_authorization_revision_accepts_leading_zeros_like_go():
-    """Go's ParseUint accepts leading zeros; the verifier must too, even for a
-    string longer than the int-conversion limit that normalizes to zero."""
-    claims = _verify_local(_canonical_payload(authorization_revision="0" * 5000))
-    assert claims.authorization_revision == 0
+def test_rejects_a_payload_carrying_a_field_core_does_not_know():
+    """A field this message does not know is some other minter's: re-encoding
+    drops it, so the payload is no longer its own canonical encoding."""
+    from saas_sdk._gen import work_context_pb2 as corepb
+
+    message = corepb.WorkContextV1()
+    message.ParseFromString(encode_payload(_canonical_payload()))
+    # Append an unknown field (number 100, wire type varint, value 1) to the
+    # canonical bytes: tag (100 << 3) = 800 as a varint is 0xA0 0x06.
+    payload = message.SerializeToString(deterministic=True) + bytes([0xA0, 0x06, 0x01])
+    seed = bytes.fromhex(_FIXTURE["signing_key_seed_hex"])
+    token = _b64url_encode(payload) + "." + _b64url_encode(_private_key(seed).sign(payload))
+    with pytest.raises(wc.WorkContextError, match="canonical encoding|does not know"):
+        golden_verifier().verify(token, wc.Expectations(**_FIXTURE["expectations"]))
+
+
+def test_rejects_a_non_canonical_encoding_of_the_same_claims():
+    """The signature covers the bytes presented, so a second encoding of the
+    same claims must not verify: the payload must BE its canonical encoding."""
+    canonical = encode_payload(_canonical_payload())
+    # A varint field number re-encoded with a redundant continuation byte is the
+    # same message to a lenient parser and not the canonical bytes.
+    assert canonical[0] == 0x0A  # field 1 (typ), wire type 2
+    non_canonical = bytes([0x8A, 0x00]) + canonical[1:]
+    seed = bytes.fromhex(_FIXTURE["signing_key_seed_hex"])
+    token = _b64url_encode(non_canonical) + "." + _b64url_encode(_private_key(seed).sign(non_canonical))
+    with pytest.raises(wc.WorkContextError):
+        golden_verifier().verify(token, wc.Expectations(**_FIXTURE["expectations"]))
+
+
+def test_authorization_revision_is_the_message_s_uint64():
+    """The revision rides as the message's uint64 — the JSON wire's
+    decimal-string rule has nothing left to say — and the maximum value the
+    golden carries round-trips."""
+    claims = _verify_local(_canonical_payload(authorization_revision=(1 << 64) - 1))
+    assert claims.authorization_revision == (1 << 64) - 1
 
 
 # --- actor chain attenuation ---------------------------------------------------
